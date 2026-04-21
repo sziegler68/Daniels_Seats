@@ -120,6 +120,16 @@ public:
     /** Get current checksum mode. */
     bool isEnhancedChecksum() const;
 
+    /**
+     * Change the LIN bus baud rate at runtime.
+     * Re-initializes the serial port with the new rate.
+     * @param newBaud  New baud rate (e.g. 9600, 10417, 19200)
+     */
+    void setBaudRate(uint32_t newBaud);
+
+    /** Get current baud rate. */
+    uint32_t getBaudRate() const;
+
     // ── Static Utility Functions ─────────────────────────────────
 
     /**

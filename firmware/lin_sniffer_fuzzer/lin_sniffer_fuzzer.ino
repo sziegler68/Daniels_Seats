@@ -217,6 +217,28 @@ void handleCommand(const String& cmd) {
         Serial.println("INFO:MSG=Monitoring stopped");
     }
 
+    // ── Baud rate change ─────────────────────────────────────────
+    else if (cmd.startsWith("SET_BAUD")) {
+        // Expected format: SET_BAUD:RATE=19200
+        int rateIdx = cmd.indexOf("RATE=");
+        if (rateIdx >= 0) {
+            String rateStr = cmd.substring(rateIdx + 5);
+            rateStr.trim();
+            uint32_t newBaud = (uint32_t)rateStr.toInt();
+
+            if (newBaud >= 1200 && newBaud <= 20000) {
+                lin.setBaudRate(newBaud);
+                Serial.print("INFO:MSG=LIN baud rate set to ");
+                Serial.println(newBaud);
+            } else {
+                Serial.println("ERROR:MSG=Invalid baud rate (must be 1200-20000)");
+            }
+        } else {
+            Serial.println("ERROR:MSG=Invalid SET_BAUD format. "
+                            "Expected: SET_BAUD:RATE=19200");
+        }
+    }
+
     // ── Unknown command ──────────────────────────────────────────
     else {
         Serial.print("ERROR:MSG=Unknown command: ");

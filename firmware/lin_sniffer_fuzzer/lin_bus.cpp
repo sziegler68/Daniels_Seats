@@ -244,6 +244,23 @@ bool LinBus::isEnhancedChecksum() const {
 
 
 // ─────────────────────────────────────────────────────────────────
+//  Baud Rate Configuration
+// ─────────────────────────────────────────────────────────────────
+
+void LinBus::setBaudRate(uint32_t newBaud) {
+    _serial.end();
+    _baudRate  = newBaud;
+    _bitTimeUs = 1000000UL / _baudRate;
+    _serial.begin(_baudRate);
+    delay(10);  // Allow USART to settle
+}
+
+uint32_t LinBus::getBaudRate() const {
+    return _baudRate;
+}
+
+
+// ─────────────────────────────────────────────────────────────────
 //  Static: Parity Calculation
 // ─────────────────────────────────────────────────────────────────
 

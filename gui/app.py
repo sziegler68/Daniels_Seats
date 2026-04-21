@@ -89,6 +89,23 @@ class LinBusAnalyzer(ttk.Window):
         )
         self.conn_status.pack(side=LEFT, padx=(PAD_WIDGET, 0))
 
+        # ── LIN Baud Rate Selector ────────────────────────────────
+        baud_frame = ttk.Frame(conn_frame)
+        baud_frame.pack(side=LEFT, padx=(20, 0))
+
+        ttk.Label(
+            baud_frame, text="LIN Baud:", font=FONT_BODY,
+        ).pack(side=LEFT, padx=(0, 3))
+
+        self._baud_rates = ["9600", "10417", "19200"]
+        self.baud_combo = ttk.Combobox(
+            baud_frame, values=self._baud_rates,
+            width=8, state="readonly", font=FONT_MONO,
+        )
+        self.baud_combo.set("19200")
+        self.baud_combo.pack(side=LEFT, padx=(0, PAD_WIDGET))
+        self.baud_combo.bind("<<ComboboxSelected>>", self._on_baud_change)
+
         # ── Demo Mode Controls (right side) ───────────────────────
         demo_frame = ttk.Frame(conn_frame)
         demo_frame.pack(side=RIGHT)
@@ -196,10 +213,33 @@ class LinBusAnalyzer(ttk.Window):
                     text=f"\u25CF Connected ({port})", bootstyle="success",
                 )
                 self.status_text.configure(text=f"Connected to {port}")
+
+                # Sync baud rate if user selected non-default before connecting
+                baud = self.baud_combo.get()
+                if baud != "19200":
+                    self.after(500, lambda: self.serial.send_command(
+                        f"SET_BAUD:RATE={baud}"))
             else:
                 self.status_text.configure(
                     text=f"Error: Could not open {port}",
                 )
+
+    def _on_baud_change(self, _event=None):
+        """Send the new baud rate to the Arduino when the dropdown changes."""
+        baud = self.baud_combo.get()
+        bit_time_us = round(1_000_000 / int(baud), 1)
+
+        if self.serial.is_connected():
+            self.serial.send_command(f"SET_BAUD:RATE={baud}")
+            self.status_text.configure(
+                text=f"\u2139 LIN baud set to {baud} "
+                     f"(1 bit = {bit_time_us} \u00b5s on scope)",
+            )
+        else:
+            self.status_text.configure(
+                text=f"\u2139 LIN baud will be {baud} on next connect "
+                     f"(1 bit = {bit_time_us} \u00b5s on scope)",
+            )
 
     # ═════════════════════════════════════════════════════════════
     #  Serial Queue Polling
