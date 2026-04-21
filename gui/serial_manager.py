@@ -27,6 +27,7 @@ class SerialMessage:
     params:    dict           # Parsed key-value pairs
     raw:       str            # Original line from serial
     timestamp: datetime = field(default_factory=datetime.now)
+    direction: str = "RX"     # "RX" (incoming) or "TX" (outgoing)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -127,6 +128,13 @@ class SerialManager:
             try:
                 self.port.write(f"{command}\n".encode("ascii"))
                 self.port.flush()
+                # Inject a copy into the queue to track outgoing traffic
+                self.data_queue.put(SerialMessage(
+                    msg_type="TX_CMD",
+                    params={"CMD": command},
+                    raw=command,
+                    direction="TX",
+                ))
             except serial.SerialException as e:
                 self.data_queue.put(SerialMessage(
                     msg_type="ERROR",

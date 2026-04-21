@@ -23,6 +23,8 @@ from serial_manager import SerialManager
 from sniffer_tab import SnifferTab
 from fuzzer_tab import FuzzerTab
 from manual_tab import ManualTab
+from mapper_tab import MapperTab
+from live_log_tab import LiveLogTab
 from demo_mode import DemoSimulator
 from styles import *
 
@@ -142,6 +144,9 @@ class LinBusAnalyzer(ttk.Window):
                                      self.sniffer_tab)
         self.manual_tab  = ManualTab(self.notebook, self.serial,
                                      self.fuzzer_tab)
+        self.mapper_tab  = MapperTab(self.notebook, self.serial,
+                                     self.fuzzer_tab)
+        self.live_log_tab = LiveLogTab(self.notebook, self.serial)
 
         self.notebook.add(
             self.sniffer_tab, text="  \U0001F50D Sniffer Dashboard  ",
@@ -152,6 +157,14 @@ class LinBusAnalyzer(ttk.Window):
         self.notebook.add(
             self.manual_tab,
             text="  \U0001F3AF Manual Trigger & Decode  ",
+        )
+        self.notebook.add(
+            self.mapper_tab,
+            text="  \U0001F5FA\uFE0F ID Mapper  ",
+        )
+        self.notebook.add(
+            self.live_log_tab,
+            text="  \U0001F4DC Traffic Log  ",
         )
 
         # ── Status Bar ────────────────────────────────────────────
@@ -266,6 +279,10 @@ class LinBusAnalyzer(ttk.Window):
 
     def _dispatch_message(self, msg):
         """Route a SerialMessage to the appropriate handler."""
+        
+        # Unconditionally log to the live traffic view
+        self.live_log_tab.handle_message(msg)
+        
         t = msg.msg_type
         p = msg.params
 
@@ -304,6 +321,12 @@ class LinBusAnalyzer(ttk.Window):
             )
         elif t == "MONITOR_DATA":
             pass   # Could be added to a live widget in a future update
+
+        # Mapper messages
+        elif t == "MAP_ACK":
+            self.mapper_tab.handle_map_ack(p)
+        elif t == "MAP_ERROR":
+            self.mapper_tab.handle_map_error(p)
 
     # ═════════════════════════════════════════════════════════════
     #  Shutdown

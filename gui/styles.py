@@ -42,6 +42,25 @@ COLOR_TEXT_BRIGHT   = "#e0e0e0"
 COLOR_LOG_BG        = "#0d1117"
 COLOR_LOG_SELECT    = "#264f78"
 
+# Category colors (ID Mapper tab)
+COLOR_CAT_HEATED    = "#ff8c00"     # dark orange
+COLOR_CAT_COOLED    = "#00bcd4"     # teal / cyan
+COLOR_CAT_LUMBAR    = "#4caf50"     # green
+COLOR_CAT_MOTOR     = "#9c27b0"     # purple
+COLOR_CAT_HEADREST  = "#e91e63"     # pink
+COLOR_CAT_OTHER     = "#6c757d"     # dim grey
+COLOR_CAT_UNKNOWN   = "#455a64"     # blue-grey
+
+CATEGORY_COLORS = {
+    "Heated Seat": COLOR_CAT_HEATED,
+    "Cooled Seat": COLOR_CAT_COOLED,
+    "Lumbar":      COLOR_CAT_LUMBAR,
+    "Seat Motor":  COLOR_CAT_MOTOR,
+    "Headrest":    COLOR_CAT_HEADREST,
+    "Other":       COLOR_CAT_OTHER,
+    "Unknown":     COLOR_CAT_UNKNOWN,
+}
+
 
 # ─────────────────────────────────────────────────────────────────
 #  Treeview Tag Styles
