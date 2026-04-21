@@ -1,0 +1,367 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════
+ *  LIN Bus Sniffer & Fuzzer — Main Sketch
+ *  Lexus IS350 Seat ECU Reverse Engineering Toolchain
+ * ═══════════════════════════════════════════════════════════════════
+ * 
+ * Hardware:
+ *   MCU:         Arduino Nano Every (ATmega4809)
+ *   Transceiver: GODIYMODULES TJA1021 (Master Mode)
+ *   LIN Bus:     19,200 baud on Serial1 (TX1=Pin1, RX1=Pin0)
+ *   USB:         115,200 baud on Serial  (PC communication)
+ *   NSLP Pin:    D2 → TJA1021 NSLP  (or set to LIN_SLP_PIN_DISABLED)
+ * 
+ * Serial Protocol:
+ *   PC → Arduino commands are line-terminated ASCII strings.
+ *   Arduino → PC responses use the format: TYPE:KEY=VAL,KEY=VAL,...
+ *   See the implementation plan or README for the full protocol spec.
+ * 
+ * ═══════════════════════════════════════════════════════════════════
+ */
+
+#include "lin_bus.h"
+#include "sniffer.h"
+#include "fuzzer.h"
+
+
+// ─────────────────────────────────────────────────────────────────
+//  Pin & Baud Configuration
+// ─────────────────────────────────────────────────────────────────
+
+// TJA1021 NSLP pin.  Set to LIN_SLP_PIN_DISABLED (255) if the
+// GODIYMODULES board ties NSLP directly to the 5V rail.
+#define SLP_PIN     2
+
+// Serial1 TX pin — needed for manual break field generation.
+#define TX1_PIN     PIN_SERIAL1_TX
+
+// Baud rates
+#define LIN_BAUD    19200      // LIN bus speed
+#define USB_BAUD    115200     // PC ↔ Arduino speed
+
+
+// ─────────────────────────────────────────────────────────────────
+//  Global Objects
+// ─────────────────────────────────────────────────────────────────
+
+LinBus   lin(Serial1, TX1_PIN, SLP_PIN, LIN_BAUD);
+Sniffer  sniffer;
+Fuzzer   fuzzer;
+
+
+// ─────────────────────────────────────────────────────────────────
+//  Monitoring State
+// ─────────────────────────────────────────────────────────────────
+
+bool     monitoringActive = false;
+uint8_t  monitorIds[LIN_NUM_IDS];
+uint8_t  monitorIdCount   = 0;
+unsigned long lastMonitorPoll = 0;
+
+#define MONITOR_INTERVAL_MS  100
+
+
+// ─────────────────────────────────────────────────────────────────
+//  Serial Input Buffer
+// ─────────────────────────────────────────────────────────────────
+
+String inputBuffer = "";
+
+
+// ─────────────────────────────────────────────────────────────────
+//  Forward Declarations
+// ─────────────────────────────────────────────────────────────────
+
+void handleCommand(const String& cmd);
+void parseSendFrame(const String& cmd);
+void parseMonitorCommand(const String& cmd);
+void pollMonitoredIds();
+
+
+// ═════════════════════════════════════════════════════════════════
+//  setup()
+// ═════════════════════════════════════════════════════════════════
+
+void setup() {
+    Serial.begin(USB_BAUD);
+    while (!Serial) { ; }   // Wait for USB CDC to enumerate
+
+    lin.begin();
+    sniffer.begin(&lin);
+    fuzzer.begin(&lin, &sniffer);
+
+    Serial.println("INFO:MSG=LIN Sniffer/Fuzzer Ready (Nano Every + TJA1021)");
+    Serial.println("INFO:MSG=Send PING to verify connection");
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+//  loop()
+// ═════════════════════════════════════════════════════════════════
+
+void loop() {
+    // ── Read and buffer serial commands ──────────────────────────
+    while (Serial.available()) {
+        char c = Serial.read();
+        if (c == '\n' || c == '\r') {
+            if (inputBuffer.length() > 0) {
+                inputBuffer.trim();
+                handleCommand(inputBuffer);
+                inputBuffer = "";
+            }
+        } else {
+            inputBuffer += c;
+        }
+    }
+
+    // ── Continuous monitoring (when active and no scan/fuzz running)
+    if (monitoringActive && !sniffer.isRunning() && !fuzzer.isRunning()) {
+        if (millis() - lastMonitorPoll >= MONITOR_INTERVAL_MS) {
+            pollMonitoredIds();
+            lastMonitorPoll = millis();
+        }
+    }
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+//  Command Dispatcher
+// ═════════════════════════════════════════════════════════════════
+
+void handleCommand(const String& cmd) {
+
+    // ── Health check ─────────────────────────────────────────────
+    if (cmd == "PING") {
+        Serial.println("PONG");
+    }
+
+    // ── Sniffer controls ─────────────────────────────────────────
+    else if (cmd == "START_SNIFF") {
+        if (sniffer.isRunning() || fuzzer.isRunning()) {
+            Serial.println("ERROR:MSG=Another operation is already running");
+            return;
+        }
+        sniffer.scanAll();
+    }
+    else if (cmd == "STOP_SNIFF") {
+        sniffer.requestStop();
+    }
+
+    // ── Fuzzer controls ──────────────────────────────────────────
+    else if (cmd.startsWith("START_FUZZ")) {
+        if (sniffer.isRunning() || fuzzer.isRunning()) {
+            Serial.println("ERROR:MSG=Another operation is already running");
+            return;
+        }
+
+        // Parse skip IDs from: START_FUZZ:SKIP=15,2A,30
+        uint8_t skipIds[LIN_NUM_IDS];
+        uint8_t skipCount = 0;
+
+        int skipIdx = cmd.indexOf("SKIP=");
+        if (skipIdx >= 0) {
+            String skipStr = cmd.substring(skipIdx + 5);
+            while (skipStr.length() > 0 && skipCount < LIN_NUM_IDS) {
+                int commaIdx = skipStr.indexOf(',');
+                String idStr;
+                if (commaIdx >= 0) {
+                    idStr   = skipStr.substring(0, commaIdx);
+                    skipStr = skipStr.substring(commaIdx + 1);
+                } else {
+                    idStr   = skipStr;
+                    skipStr = "";
+                }
+                idStr.trim();
+                if (idStr.length() > 0) {
+                    skipIds[skipCount++] =
+                        (uint8_t)strtol(idStr.c_str(), NULL, 16);
+                }
+            }
+        }
+
+        fuzzer.startFuzz(skipIds, skipCount);
+    }
+    else if (cmd == "STOP_FUZZ") {
+        fuzzer.requestStop();
+    }
+
+    // ── Manual frame injection ───────────────────────────────────
+    else if (cmd.startsWith("SEND_FRAME")) {
+        parseSendFrame(cmd);
+    }
+
+    // ── Checksum mode ────────────────────────────────────────────
+    else if (cmd.startsWith("SET_CKSUM")) {
+        if (cmd.indexOf("ENHANCED") >= 0) {
+            lin.setChecksumMode(true);
+            Serial.println("INFO:MSG=Checksum set to Enhanced (LIN 2.x)");
+        } else if (cmd.indexOf("CLASSIC") >= 0) {
+            lin.setChecksumMode(false);
+            Serial.println("INFO:MSG=Checksum set to Classic (LIN 1.x)");
+        }
+    }
+
+    // ── Bus wake-up ──────────────────────────────────────────────
+    else if (cmd == "WAKE_BUS") {
+        lin.wakeBusDominant();
+        Serial.println("INFO:MSG=Bus wake-up pulse sent");
+    }
+
+    // ── Continuous monitoring ────────────────────────────────────
+    else if (cmd.startsWith("MONITOR")) {
+        parseMonitorCommand(cmd);
+    }
+    else if (cmd == "STOP_MONITOR") {
+        monitoringActive = false;
+        monitorIdCount   = 0;
+        Serial.println("INFO:MSG=Monitoring stopped");
+    }
+
+    // ── Unknown command ──────────────────────────────────────────
+    else {
+        Serial.print("ERROR:MSG=Unknown command: ");
+        Serial.println(cmd);
+    }
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+//  SEND_FRAME Parser
+// ═════════════════════════════════════════════════════════════════
+
+void parseSendFrame(const String& cmd) {
+    // Expected format: SEND_FRAME:ID=0A,DLC=2,DATA=00_42
+    int idIdx   = cmd.indexOf("ID=");
+    int dlcIdx  = cmd.indexOf("DLC=");
+    int dataIdx = cmd.indexOf("DATA=");
+
+    if (idIdx < 0 || dlcIdx < 0 || dataIdx < 0) {
+        Serial.println("ERROR:MSG=Invalid SEND_FRAME format. "
+                        "Expected: SEND_FRAME:ID=XX,DLC=N,DATA=XX_XX...");
+        return;
+    }
+
+    // Parse ID
+    String idStr = cmd.substring(idIdx + 3, cmd.indexOf(',', idIdx));
+    uint8_t id   = (uint8_t)strtol(idStr.c_str(), NULL, 16);
+
+    // Parse DLC
+    String dlcStr = cmd.substring(dlcIdx + 4, cmd.indexOf(',', dlcIdx));
+    uint8_t dlc   = (uint8_t)dlcStr.toInt();
+
+    if (dlc == 0 || dlc > LIN_MAX_DATA_LEN) {
+        Serial.println("ERROR:MSG=Invalid DLC (must be 1-8)");
+        return;
+    }
+
+    // Parse DATA bytes (underscore-separated hex)
+    String dataStr = cmd.substring(dataIdx + 5);
+    uint8_t data[LIN_MAX_DATA_LEN];
+    uint8_t dataCount = 0;
+
+    while (dataStr.length() > 0 && dataCount < dlc) {
+        int sepIdx = dataStr.indexOf('_');
+        String byteStr;
+        if (sepIdx >= 0) {
+            byteStr = dataStr.substring(0, sepIdx);
+            dataStr = dataStr.substring(sepIdx + 1);
+        } else {
+            byteStr = dataStr;
+            dataStr = "";
+        }
+        byteStr.trim();
+        if (byteStr.length() > 0) {
+            data[dataCount++] = (uint8_t)strtol(byteStr.c_str(), NULL, 16);
+        }
+    }
+
+    if (dataCount != dlc) {
+        Serial.println("ERROR:MSG=Data byte count does not match DLC");
+        return;
+    }
+
+    // Transmit the frame
+    lin.sendHeader(id);
+    lin.sendResponse(id, data, dlc);
+
+    Serial.print("FRAME_SENT:ID=");
+    if (id < 0x10) Serial.print("0");
+    Serial.println(id, HEX);
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+//  MONITOR Parser
+// ═════════════════════════════════════════════════════════════════
+
+void parseMonitorCommand(const String& cmd) {
+    // Expected format: MONITOR:IDS=15,2A,30
+    int idsIdx = cmd.indexOf("IDS=");
+    if (idsIdx < 0) {
+        Serial.println("ERROR:MSG=Invalid MONITOR format. "
+                        "Expected: MONITOR:IDS=XX,XX,...");
+        return;
+    }
+
+    monitorIdCount = 0;
+    String idsStr  = cmd.substring(idsIdx + 4);
+
+    while (idsStr.length() > 0 && monitorIdCount < LIN_NUM_IDS) {
+        int commaIdx = idsStr.indexOf(',');
+        String idStr;
+        if (commaIdx >= 0) {
+            idStr  = idsStr.substring(0, commaIdx);
+            idsStr = idsStr.substring(commaIdx + 1);
+        } else {
+            idStr  = idsStr;
+            idsStr = "";
+        }
+        idStr.trim();
+        if (idStr.length() > 0) {
+            monitorIds[monitorIdCount++] =
+                (uint8_t)strtol(idStr.c_str(), NULL, 16);
+        }
+    }
+
+    monitoringActive = true;
+    lastMonitorPoll  = millis();
+
+    Serial.print("INFO:MSG=Monitoring ");
+    Serial.print(monitorIdCount);
+    Serial.println(" IDs");
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+//  Continuous ID Polling
+// ═════════════════════════════════════════════════════════════════
+
+void pollMonitoredIds() {
+    for (uint8_t i = 0; i < monitorIdCount; i++) {
+        uint8_t id = monitorIds[i];
+        uint8_t dataBuf[LIN_MAX_DATA_LEN];
+        uint8_t dlc = 0;
+
+        lin.sendHeader(id);
+        bool valid = lin.readResponse(id, dataBuf, dlc);
+
+        if (valid && dlc > 0) {
+            // Format: MONITOR_DATA:ID=15,DLC=4,DATA=00_FF_00_12
+            Serial.print("MONITOR_DATA:ID=");
+            if (id < 0x10) Serial.print("0");
+            Serial.print(id, HEX);
+            Serial.print(",DLC=");
+            Serial.print(dlc);
+            Serial.print(",DATA=");
+
+            for (uint8_t j = 0; j < dlc; j++) {
+                if (j > 0) Serial.print("_");
+                if (dataBuf[j] < 0x10) Serial.print("0");
+                Serial.print(dataBuf[j], HEX);
+            }
+            Serial.println();
+        }
+
+        delay(LIN_INTERFRAME_DELAY_MS);
+    }
+}
