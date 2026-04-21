@@ -161,6 +161,42 @@ class ManualTab(ttk.Frame):
             command=self._on_send_custom, width=10,
         ).pack(side=LEFT, padx=(PAD_WIDGET, 0))
 
+        # ── Preset Test Frames ────────────────────────────────────
+        preset_label_row = ttk.Frame(custom_lf)
+        preset_label_row.pack(fill=X, pady=(PAD_WIDGET, 2))
+
+        ttk.Label(
+            preset_label_row,
+            text="\U0001F9EA Scope Test Presets — click to auto-fill, then hit Send:",
+            font=FONT_SMALL, bootstyle="info",
+        ).pack(side=LEFT)
+
+        preset_row = ttk.Frame(custom_lf)
+        preset_row.pack(fill=X, pady=(0, PAD_WIDGET))
+
+        # Define test presets:  (label, id_hex, dlc, data_str, tooltip)
+        self._test_presets = [
+            ("1-Byte Pulse",   "00", "1", "FF",
+             "Simplest frame — single 0xFF byte. Easy to spot on scope."),
+            ("Alternating",    "01", "4", "FF 00 FF 00",
+             "Alternating high/low pattern — good for checking bit timing."),
+            ("All Ones (8B)",  "02", "8", "FF FF FF FF FF FF FF FF",
+             "Max-length all-high frame — longest waveform, easy to see."),
+            ("All Zeros (8B)", "03", "8", "00 00 00 00 00 00 00 00",
+             "Max-length all-low frame — compare with all-ones."),
+            ("Staircase",      "04", "8", "01 02 04 08 10 20 40 80",
+             "Walking bit pattern — each byte has one bit set."),
+        ]
+
+        for label, pid, dlc, data, tip in self._test_presets:
+            btn = ttk.Button(
+                preset_row, text=f"\U0001F9EA {label}",
+                bootstyle="info-outline",
+                command=lambda p=pid, d=dlc, dt=data:
+                    self._fill_preset(p, d, dt),
+            )
+            btn.pack(side=LEFT, padx=(0, PAD_INNER))
+
         # ── Function Map ──────────────────────────────────────────
         bot_frame = ttk.Frame(paned, padding=5)
         paned.add(bot_frame, weight=1)
@@ -236,6 +272,22 @@ class ManualTab(ttk.Frame):
         if not self.custom_data.get().strip():
             self.custom_data.insert(0, self._placeholder)
             self.custom_data.configure(foreground=COLOR_TEXT_DIM)
+
+    # ═════════════════════════════════════════════════════════════
+    #  Preset Test Frame Fill
+    # ═════════════════════════════════════════════════════════════
+
+    def _fill_preset(self, id_hex: str, dlc: str, data: str):
+        """Auto-fill the custom frame sender fields with a test preset."""
+        self.custom_id.delete(0, END)
+        self.custom_id.insert(0, f"0x{id_hex}")
+
+        self.custom_dlc.delete(0, END)
+        self.custom_dlc.insert(0, dlc)
+
+        self.custom_data.delete(0, END)
+        self.custom_data.insert(0, data)
+        self.custom_data.configure(foreground=COLOR_TEXT_BRIGHT)
 
     # ═════════════════════════════════════════════════════════════
     #  Hit Row Management
