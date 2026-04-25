@@ -26,24 +26,31 @@ into an analog vehicle (Toyota 4Runner).
 - **Fuzzer Dashboard** — Hit detection table, before/after comparison, event log
 - **Manual Trigger** — One-click resend, notes fields, function map export (CSV/JSON)
 
-## Hardware Requirements
+## Hardware Requirements & Wiring
 
-| Component | Detail |
-|-----------|--------|
-| MCU | Arduino Nano Every (ATmega4809) |
-| Transceiver | GODIYMODULES TJA1021 (Master Mode) |
-| Serial1 | TX1=Pin 1, RX1=Pin 0 → TJA1021 TXD/RXD |
-| NSLP Pin | D2 → TJA1021 NSLP (or tied to 5V) |
-| LIN Bus | 19,200 baud, single-wire, 12V supply |
-| USB | 115,200 baud (PC communication) |
+### 1. Arduino Nano Every
+- **Microcontroller**: ATmega4809
+- **USB**: 115,200 baud (PC communication)
 
-## Quick Start
+### 2. LIN Transceiver (TJA1021 - GODIYMODULES Master Mode)
+- **TX / RX**: Serial1 (TX1 = Pin 1, RX1 = Pin 0)
+- **NSLP (Sleep/Wake)**: Pin **D2** (or tie to 5V)
+- **LIN Bus**: Single-wire, 19,200 baud
+- **Power**: 12V from bench supply / seat circuit
+
+### 3. Current Sensor (INA260 Breakout)
+- **Purpose**: Detects physical seat activations (Silent Hits) & provides 12A safety cutoff.
+- **I2C Interface**: SDA = **A4**, SCL = **A5**
+- **Hardware Alert**: Pin **D3** (Active-LOW, triggers on > 12A)
+- **Power Rating**: 15A max continuous
+- **Wiring**: Place `VIN+` / `VIN-` **in series** with the seat module's 12V power supply lead.
+
+## Quick Start & Workflow
 
 ### 1. Flash the Firmware
-1. Open `firmware/lin_sniffer_fuzzer/lin_sniffer_fuzzer.ino` in the Arduino IDE
-2. Select **Board: Arduino Nano Every**
-3. Select the correct COM port
-4. Upload
+1. Open `firmware/lin_sniffer_fuzzer/lin_sniffer_fuzzer.ino` in the Arduino IDE.
+2. Install the `Adafruit_INA260` library via Library Manager.
+3. Select **Board: Arduino Nano Every** and upload.
 
 ### 2. Launch the GUI
 ```bash
@@ -52,12 +59,32 @@ pip install -r requirements.txt
 python app.py
 ```
 
-### 3. Workflow
-1. **Connect** — Select the Arduino's COM port and click Connect
-2. **Sniff** — Run a full header scan to discover responsive Status IDs
-3. **Fuzz** — Automatically cycle through unused IDs with payload injection
-4. **Trigger** — Resend discovered commands and document physical responses
-5. **Export** — Save the function map as CSV or JSON
+### 3. Step-by-Step Usage
+
+1. **Connect**
+   - Select the Arduino's COM port in the upper left and click Connect.
+   - The Arduino will automatically wake the LIN bus and capture idle baselines.
+
+2. **Phase 1: Sniffing (Discover Status IDs)**
+   - Go to the **Sniffer** tab.
+   - Click **Run Full Scan**. The Arduino will probe IDs `0x00` through `0x3B`.
+   - Responsive slave IDs will populate in the table. These are the IDs the seat uses to report its status.
+
+3. **Phase 2: Fuzzing (Discover Action IDs)**
+   - Go to the **Fuzzer** tab.
+   - Click **Start Fuzz**. The Arduino will inject payloads into all unused IDs and monitor for responses.
+   - **Orange Hits (LIN Status):** A payload caused a change in the data of a known Status ID.
+   - **Purple Hits (Current Spike):** A payload caused a physical component to activate (e.g., heater, fan) detected by the INA260, even if no digital LIN status changed.
+   - *Thermal Settling:* If a heater activates, the fuzzer will pause briefly to let the current dissipate.
+   - *Hard Latches:* If current remains high (e.g., >5 seconds), the GUI will show a **⚠ PAUSED** warning. You must power-cycle the bench supply, then click **▶ Resume Fuzz**.
+
+4. **Phase 3: Trigger & Map**
+   - Go to the **ID Mapper** / Manual tab.
+   - Review the discovered hits. Use the manual controls to re-send payloads and physically observe what they do.
+   - Classify each command (e.g., "Heater High", "Fan Low").
+
+5. **Phase 4: Export**
+   - Export your classified mappings to JSON/CSV for use in your final retrofit microcontroller.
 
 ## Serial Protocol
 
