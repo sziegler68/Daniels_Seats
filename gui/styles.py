@@ -69,6 +69,7 @@ CATEGORY_COLORS = {
 TREEVIEW_TAGS = {
     "responsive": {"foreground": COLOR_ACCENT_GREEN},
     "hit":        {"foreground": COLOR_ACCENT_ORANGE},
+    "amp_hit":    {"foreground": COLOR_ACCENT_PURPLE},
     "changed":    {"foreground": COLOR_ACCENT_RED},
     "info":       {"foreground": COLOR_TEXT_DIM},
     "highlight":  {"foreground": COLOR_ACCENT_CYAN},

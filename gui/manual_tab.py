@@ -25,6 +25,10 @@ class ManualTab(ttk.Frame):
         self.fuzzer_tab = fuzzer_tab
         self.function_map = []   # List of {action_id, payload, function}
         self._hit_rows = []      # Internal refs to hit row widgets
+        self._repeat_active_hit = None   # Currently repeating hit dict (or None)
+        self._repeat_job = None          # Tkinter after() job ID
+        self._custom_repeating = False   # Custom sender repeat state
+        self._custom_repeat_job = None
 
         self._build_ui()
 
@@ -160,6 +164,12 @@ class ManualTab(ttk.Frame):
             custom_row, text="\u25B6 Send", bootstyle="primary",
             command=self._on_send_custom, width=10,
         ).pack(side=LEFT, padx=(PAD_WIDGET, 0))
+
+        self.btn_custom_repeat = ttk.Button(
+            custom_row, text="\U0001F501 Repeat", bootstyle="info-outline",
+            command=self._on_toggle_custom_repeat, width=10,
+        )
+        self.btn_custom_repeat.pack(side=LEFT, padx=(PAD_INNER, 0))
 
         # ── Preset Test Frames ────────────────────────────────────
         preset_label_row = ttk.Frame(custom_lf)
@@ -330,12 +340,24 @@ class ManualTab(ttk.Frame):
             command=lambda h=hit: self._on_trigger(h),
         ).pack(side=LEFT, padx=3)
 
+        repeat_btn = ttk.Button(
+            row, text="\U0001F501", bootstyle="info-outline", width=4,
+            command=lambda h=hit: None,  # placeholder, set below
+        )
+        repeat_btn.pack(side=LEFT, padx=3)
+        # Wire up the command after the button exists so the lambda
+        # can reference the button widget for visual state changes
+        repeat_btn.configure(
+            command=lambda h=hit, b=repeat_btn: self._on_toggle_repeat(h, b),
+        )
+
         note_entry = ttk.Entry(row, font=FONT_BODY)
         note_entry.pack(side=LEFT, padx=3, fill=X, expand=True)
 
         self._hit_rows.append({
             "hit":        hit,
             "note_entry": note_entry,
+            "repeat_btn": repeat_btn,
         })
 
     # ═════════════════════════════════════════════════════════════
@@ -352,6 +374,81 @@ class ManualTab(ttk.Frame):
             f"DATA={hit['data']}"
         )
         self.serial.send_command(cmd)
+
+    # ── Repeat Toggle (Hit Rows) ──────────────────────────────────
+
+    def _on_toggle_repeat(self, hit: dict, btn: ttk.Button):
+        """Toggle continuous re-sending of a hit payload."""
+        if self._repeat_active_hit is hit:
+            # Stop repeating
+            self._stop_repeat()
+            return
+
+        # Stop any other active repeat first
+        self._stop_repeat()
+
+        # Start repeating this hit
+        self._repeat_active_hit = hit
+        btn.configure(text="\u23F9", bootstyle="danger")
+        self._repeat_loop(hit, btn)
+
+    def _repeat_loop(self, hit: dict, btn: ttk.Button):
+        """Timer-driven loop: sends the frame every 200 ms."""
+        if self._repeat_active_hit is not hit:
+            return
+        if not self.serial.is_connected():
+            self._stop_repeat()
+            return
+        self._on_trigger(hit)
+        self._repeat_job = self.after(200, lambda: self._repeat_loop(hit, btn))
+
+    def _stop_repeat(self):
+        """Cancel any active hit repeat."""
+        if self._repeat_job is not None:
+            self.after_cancel(self._repeat_job)
+            self._repeat_job = None
+
+        # Reset all repeat buttons to default appearance
+        for row_data in self._hit_rows:
+            row_data["repeat_btn"].configure(
+                text="\U0001F501", bootstyle="info-outline",
+            )
+        self._repeat_active_hit = None
+
+    # ── Repeat Toggle (Custom Sender) ─────────────────────────────
+
+    def _on_toggle_custom_repeat(self):
+        """Toggle continuous re-sending of the custom frame."""
+        if self._custom_repeating:
+            self._stop_custom_repeat()
+        else:
+            self._custom_repeating = True
+            self.btn_custom_repeat.configure(
+                text="\u23F9 Stop", bootstyle="danger",
+            )
+            self._custom_repeat_loop()
+
+    def _custom_repeat_loop(self):
+        """Timer-driven loop: sends the custom frame every 200 ms."""
+        if not self._custom_repeating:
+            return
+        if not self.serial.is_connected():
+            self._stop_custom_repeat()
+            return
+        self._on_send_custom()
+        self._custom_repeat_job = self.after(
+            200, self._custom_repeat_loop,
+        )
+
+    def _stop_custom_repeat(self):
+        """Cancel the custom sender repeat."""
+        self._custom_repeating = False
+        if self._custom_repeat_job is not None:
+            self.after_cancel(self._custom_repeat_job)
+            self._custom_repeat_job = None
+        self.btn_custom_repeat.configure(
+            text="\U0001F501 Repeat", bootstyle="info-outline",
+        )
 
     def _on_send_custom(self):
         """Send a user-defined custom frame."""

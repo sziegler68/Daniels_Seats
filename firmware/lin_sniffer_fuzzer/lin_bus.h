@@ -27,6 +27,14 @@
 #define LIN_MAX_ID                 0x3F   // IDs 0–63
 #define LIN_NUM_IDS                64
 
+// Safe scan/fuzz ceiling: IDs 60–63 are reserved per LIN 2.x spec.
+//   60 (0x3C) = Diagnostic Request  (must use Classic checksum)
+//   61 (0x3D) = Diagnostic Response (must use Classic checksum)
+//   62 (0x3E) = User-Defined frame
+//   63 (0x3F) = Reserved / Illegal
+#define LIN_MAX_SCAN_ID            0x3B   // Highest ID for automated scans
+#define LIN_SCAN_NUM_IDS           60     // Count of scannable IDs (0–59)
+
 // Break field: 14 dominant bits (LIN spec minimum = 13)
 #define LIN_BREAK_DOMINANT_BITS    14
 // Break delimiter: 1 recessive bit

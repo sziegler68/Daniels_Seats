@@ -299,8 +299,16 @@ class LinBusAnalyzer(ttk.Window):
             self.fuzzer_tab.handle_fuzz_sending(p)
         elif t == "FUZZ_HIT":
             self.fuzzer_tab.handle_fuzz_hit(p)
+        elif t == "FUZZ_HIT_AMP":
+            self.fuzzer_tab.handle_fuzz_hit_amp(p)
         elif t == "FUZZ_DONE":
             self.fuzzer_tab.handle_fuzz_done(p)
+        elif t == "FUZZ_PAUSED":
+            self.fuzzer_tab.handle_fuzz_paused(p)
+
+        # Emergency stop (INA260 overcurrent)
+        elif t == "EMERGENCY_STOP":
+            self._handle_emergency_stop(p)
 
         # General responses
         elif t == "PONG":
@@ -331,6 +339,43 @@ class LinBusAnalyzer(ttk.Window):
     # ═════════════════════════════════════════════════════════════
     #  Shutdown
     # ═════════════════════════════════════════════════════════════
+
+    def _handle_emergency_stop(self, params: dict):
+        """Handle EMERGENCY_STOP:OVERCURRENT,AMP=X.XX from the Arduino.
+
+        Triggered by the INA260 hardware interrupt when current exceeds 12 A.
+        Shows a blocking danger dialog so the user can investigate before
+        any further commands are sent.
+        """
+        amp_str = params.get("AMP", "?.??")
+
+        # Update status bar
+        self.status_text.configure(
+            text=f"\u26A1 EMERGENCY: Overcurrent detected — {amp_str} A",
+        )
+
+        # Log to the live log
+        self.live_log_tab.handle_message(
+            type("FakeMsg", (), {
+                "msg_type": "ERROR",
+                "params": {"MSG": f"OVERCURRENT: {amp_str} A — All operations halted"},
+                "raw": f"EMERGENCY_STOP:OVERCURRENT,AMP={amp_str}",
+            })()
+        )
+
+        # Show a blocking danger dialog
+        from tkinter import messagebox
+        messagebox.showerror(
+            "⚡ EMERGENCY — OVERCURRENT",
+            f"The INA260 current sensor detected {amp_str} A on the seat module "
+            f"power line, which exceeds the 12 A safety threshold.\n\n"
+            f"All fuzzing, sniffing, and monitoring operations have been "
+            f"immediately halted by the Arduino.\n\n"
+            f"Please:\n"
+            f"  1. Check your bench PSU amperage display\n"
+            f"  2. Power-cycle the seat module if needed\n"
+            f"  3. Click OK to resume normal operation",
+        )
 
     def _on_close(self):
         """Clean shutdown: disconnect serial, stop demo, destroy window."""

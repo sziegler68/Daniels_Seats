@@ -22,6 +22,7 @@
 #include "lin_bus.h"
 #include "sniffer.h"
 #include "fuzzer.h"
+#include "current_sensor.h"
 
 
 // ─────────────────────────────────────────────────────────────────
@@ -31,6 +32,10 @@
 // TJA1021 NSLP pin.  Set to LIN_SLP_PIN_DISABLED (255) if the
 // GODIYMODULES board ties NSLP directly to the 5V rail.
 #define SLP_PIN     2
+
+// INA260 ALERT pin (hardware interrupt for overcurrent safety).
+// D3 chosen because D2 is taken by TJA1021 SLP_PIN.
+#define INA260_ALERT_PIN  3
 
 // Serial1 TX pin — needed for manual break field generation.
 #define TX1_PIN     PIN_SERIAL1_TX
@@ -44,9 +49,13 @@
 //  Global Objects
 // ─────────────────────────────────────────────────────────────────
 
-LinBus   lin(Serial1, TX1_PIN, SLP_PIN, LIN_BAUD);
-Sniffer  sniffer;
-Fuzzer   fuzzer;
+LinBus         lin(Serial1, TX1_PIN, SLP_PIN, LIN_BAUD);
+Sniffer        sniffer;
+Fuzzer         fuzzer;
+CurrentSensor  currentSensor;
+
+// Overcurrent ISR flag — set by hardware interrupt, checked in loop()
+volatile bool overcurrentTriggered = false;
 
 
 // ─────────────────────────────────────────────────────────────────
@@ -76,6 +85,7 @@ void handleCommand(const String& cmd);
 void parseSendFrame(const String& cmd);
 void parseMonitorCommand(const String& cmd);
 void pollMonitoredIds();
+void onOvercurrent();
 
 
 // ═════════════════════════════════════════════════════════════════
@@ -88,7 +98,23 @@ void setup() {
 
     lin.begin();
     sniffer.begin(&lin);
-    fuzzer.begin(&lin, &sniffer);
+    fuzzer.begin(&lin, &sniffer, &currentSensor);
+
+    // ── INA260 Current Sensor ────────────────────────────────────
+    if (currentSensor.begin(INA260_ALERT_PIN)) {
+        currentSensor.captureBaseline();
+        Serial.print("INFO:MSG=INA260 ready. Idle baseline: ");
+        Serial.print(currentSensor.getBaselineMA(), 1);
+        Serial.println(" mA");
+
+        // Attach hardware interrupt for overcurrent safety (12 A)
+        attachInterrupt(
+            digitalPinToInterrupt(INA260_ALERT_PIN),
+            onOvercurrent, FALLING
+        );
+    } else {
+        Serial.println("INFO:MSG=INA260 not detected — current sensing disabled");
+    }
 
     Serial.println("INFO:MSG=LIN Sniffer/Fuzzer Ready (Nano Every + TJA1021)");
     Serial.println("INFO:MSG=Send PING to verify connection");
@@ -112,6 +138,24 @@ void loop() {
         } else {
             inputBuffer += c;
         }
+    }
+
+    // ── Overcurrent safety check ──────────────────────────────
+    if (overcurrentTriggered) {
+        overcurrentTriggered = false;
+
+        // Immediately halt all operations
+        sniffer.requestStop();
+        fuzzer.requestStop();
+        monitoringActive = false;
+
+        // Report to GUI
+        float currentMA = currentSensor.readCurrentMA();
+        Serial.print("EMERGENCY_STOP:OVERCURRENT,AMP=");
+        Serial.println(currentMA / 1000.0f, 2);
+
+        // Clear the INA260 latched alert so it can re-trigger
+        currentSensor.clearAlert();
     }
 
     // ── Continuous monitoring (when active and no scan/fuzz running)
@@ -183,6 +227,21 @@ void handleCommand(const String& cmd) {
     }
     else if (cmd == "STOP_FUZZ") {
         fuzzer.requestStop();
+    }
+    else if (cmd == "RECAPTURE_BASELINE") {
+        // If the fuzzer is running, it will pick this up via checkForStop().
+        // If idle, just acknowledge — baseline is auto-captured on next fuzz start.
+        if (fuzzer.isRunning()) {
+            // The fuzzer's checkForStop() handles this inline
+        }
+        // Also re-baseline the current sensor
+        if (currentSensor.isAvailable()) {
+            currentSensor.captureBaseline();
+            Serial.print("INFO:MSG=INA260 baseline recaptured: ");
+            Serial.print(currentSensor.getBaselineMA(), 1);
+            Serial.println(" mA");
+        }
+        Serial.println("INFO:MSG=Baseline recapture requested");
     }
 
     // ── Manual frame injection ───────────────────────────────────
@@ -386,4 +445,15 @@ void pollMonitoredIds() {
 
         delay(LIN_INTERFRAME_DELAY_MS);
     }
+}
+
+
+// ═════════════════════════════════════════════════════════════════
+//  INA260 Overcurrent ISR
+// ═════════════════════════════════════════════════════════════════
+
+void onOvercurrent() {
+    // Minimal ISR: just set the flag.  All heavy work (serial print,
+    // alert clearing, fuzzer stop) happens in loop() context.
+    overcurrentTriggered = true;
 }

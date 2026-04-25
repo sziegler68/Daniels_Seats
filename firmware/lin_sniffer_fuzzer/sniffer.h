@@ -1,9 +1,11 @@
 /**
  * LIN Bus Sniffer Module
  * 
- * Iterates through all 64 LIN frame IDs (0x00–0x3F) sending headers
- * and listening for slave responses.  Reports responsive "Status IDs"
- * with their detected DLC and raw data back to the PC via USB serial.
+ * Iterates through the safe LIN frame ID range (0x00–0x3B, 60 IDs)
+ * sending headers and listening for slave responses.  IDs 60–63 are
+ * excluded (diagnostic / reserved per LIN 2.x spec).  Reports
+ * responsive "Status IDs" with their detected DLC and raw data
+ * back to the PC via USB serial.
  */
 
 #ifndef SNIFFER_H
@@ -29,7 +31,8 @@ public:
     void begin(LinBus* lin);
 
     /**
-     * Execute a full header scan across IDs 0x00–0x3F.
+     * Execute a full header scan across IDs 0x00–0x3B (60 IDs).
+     * IDs 60–63 are skipped (diagnostic / reserved per LIN 2.x spec).
      * For each ID, sends a header and listens for a slave response.
      * Reports SNIFF_PROGRESS, STATUS_FOUND, and SNIFF_DONE via Serial.
      * Checks for STOP_SNIFF commands between iterations.

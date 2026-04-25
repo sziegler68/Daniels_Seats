@@ -2,7 +2,7 @@
  * LIN Bus Sniffer Module — Implementation
  * 
  * Scan Strategy:
- *   For each ID from 0x00 to 0x3F:
+ *   For each ID from 0x00 to 0x3B (60 IDs; 60–63 are reserved):
  *     1. Send a LIN header (Break + Sync + PID)
  *     2. Listen for a slave response with a 15 ms timeout
  *     3. If response received, validate checksum and detect DLC
@@ -39,9 +39,13 @@ void Sniffer::scanAll() {
     _activeCount   = 0;
     memset(_results, 0, sizeof(_results));
 
-    Serial.println("INFO:MSG=Starting header scan (IDs 0x00-0x3F)...");
+    Serial.println("INFO:MSG=Starting header scan (IDs 0x00-0x3B)...");
 
-    for (uint8_t id = 0; id <= LIN_MAX_ID; id++) {
+    // Wake the bus in case the slave entered sleep after inactivity
+    _lin->wakeBusDominant();
+    Serial.println("INFO:MSG=Bus wake-up pulse sent");
+
+    for (uint8_t id = 0; id <= LIN_MAX_SCAN_ID; id++) {
         // Check for user-requested abort
         if (checkForStop()) {
             Serial.println("INFO:MSG=Sniff aborted by user");
@@ -131,7 +135,7 @@ void Sniffer::reportProgress(uint8_t currentId) {
     Serial.print("SNIFF_PROGRESS:ID=");
     if (currentId < 0x10) Serial.print("0");
     Serial.print(currentId, HEX);
-    Serial.println(",TOTAL=64");
+    Serial.println(",TOTAL=60");
 }
 
 

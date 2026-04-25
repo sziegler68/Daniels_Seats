@@ -59,6 +59,21 @@ class FuzzerTab(ttk.Frame):
         )
         self.btn_stop.pack(side=LEFT, padx=(0, PAD_WIDGET))
 
+        self.btn_recapture = ttk.Button(
+            btn_row, text="\u27F2  Recapture Baseline",
+            bootstyle="info-outline",
+            command=self._on_recapture_baseline, width=22,
+        )
+        self.btn_recapture.pack(side=LEFT, padx=(0, PAD_WIDGET))
+
+        self.btn_resume = ttk.Button(
+            btn_row, text="\u25B6  Resume Fuzz",
+            bootstyle="success",
+            command=self._on_resume_fuzz, width=16,
+        )
+        # Hidden by default — only shown when FUZZ_PAUSED fires
+        self.btn_resume.pack_forget()
+
         self.status_label = ttk.Label(
             ctrl_frame, text="Status: Idle",
             font=FONT_BODY, bootstyle="secondary",
@@ -78,7 +93,7 @@ class FuzzerTab(ttk.Frame):
 
         columns = (
             "action_id", "dlc", "payload",
-            "status_id", "before", "after",
+            "status_id", "before", "after", "amperage",
         )
         self.hits_tree = ttk.Treeview(
             hits_frame, columns=columns, show="headings",
@@ -91,13 +106,15 @@ class FuzzerTab(ttk.Frame):
         self.hits_tree.heading("status_id",  text="Triggered Status", anchor=W)
         self.hits_tree.heading("before",     text="Before",           anchor=W)
         self.hits_tree.heading("after",      text="After",            anchor=W)
+        self.hits_tree.heading("amperage",   text="Amps (A)",         anchor=CENTER)
 
         self.hits_tree.column("action_id",  width=90,  minwidth=70)
         self.hits_tree.column("dlc",        width=50,  minwidth=40, anchor=CENTER)
         self.hits_tree.column("payload",    width=160, minwidth=100)
         self.hits_tree.column("status_id",  width=120, minwidth=80)
-        self.hits_tree.column("before",     width=180, minwidth=100)
-        self.hits_tree.column("after",      width=180, minwidth=100)
+        self.hits_tree.column("before",     width=160, minwidth=100)
+        self.hits_tree.column("after",      width=160, minwidth=100)
+        self.hits_tree.column("amperage",   width=90,  minwidth=60, anchor=CENTER)
 
         hits_scroll = ttk.Scrollbar(
             hits_frame, orient=VERTICAL, command=self.hits_tree.yview,
@@ -108,6 +125,7 @@ class FuzzerTab(ttk.Frame):
         hits_scroll.pack(side=RIGHT, fill=Y)
 
         self.hits_tree.tag_configure("hit", foreground=COLOR_ACCENT_ORANGE)
+        self.hits_tree.tag_configure("amp_hit", foreground=COLOR_ACCENT_PURPLE)
 
         # ── Event Log ─────────────────────────────────────────────
         bot_frame = ttk.Frame(paned, padding=5)
@@ -178,6 +196,29 @@ class FuzzerTab(ttk.Frame):
             text="Status: Stopped", bootstyle="secondary",
         )
 
+    def _on_recapture_baseline(self):
+        """Ask the Arduino to re-snapshot all Status IDs as the new baseline.
+
+        Useful after clearing a latched ECU state (e.g. power-cycling the seat
+        module) so the fuzzer compares against a clean reference.
+        """
+        if not self.serial.is_connected():
+            return
+        self.serial.send_command("RECAPTURE_BASELINE")
+        self._log("Baseline recapture requested", "info")
+
+    def _on_resume_fuzz(self):
+        """Send RESUME_FUZZ to the Arduino after the user has power-cycled
+        the seat module to clear a hard-latched state."""
+        if not self.serial.is_connected():
+            return
+        self.serial.send_command("RESUME_FUZZ")
+        self.btn_resume.pack_forget()
+        self.status_label.configure(
+            text="Status: Resuming...", bootstyle="info",
+        )
+        self._log("RESUME_FUZZ sent \u2014 fuzzer will continue", "info")
+
     # ═════════════════════════════════════════════════════════════
     #  Event Log Helper
     # ═════════════════════════════════════════════════════════════
@@ -222,7 +263,7 @@ class FuzzerTab(ttk.Frame):
 
         row_data = (
             f"0x{action_id}", dlc, data,
-            f"0x{status_id}", before, after,
+            f"0x{status_id}", before, after, "\u2014",
         )
         self.hits.append({
             "action_id": action_id,
@@ -231,6 +272,8 @@ class FuzzerTab(ttk.Frame):
             "status_id": status_id,
             "before":    before,
             "after":     after,
+            "amperage":  None,
+            "source":    "lin",
         })
 
         self.hits_tree.insert("", END, values=row_data, tags=("hit",))
@@ -246,6 +289,45 @@ class FuzzerTab(ttk.Frame):
             "hit",
         )
 
+    def handle_fuzz_hit_amp(self, params: dict):
+        """Handle FUZZ_HIT_AMP:ACTION_ID=XX,DLC=N,DATA=...,AMP=X.XX
+
+        Purple row — a current spike was detected by the INA260 sensor
+        even though the LIN Status IDs may not have changed.
+        """
+        action_id = params.get("ACTION_ID", "??")
+        dlc       = params.get("DLC", "?")
+        data      = params.get("DATA", "").replace("_", " ")
+        amp_str   = params.get("AMP", "?.??")
+
+        row_data = (
+            f"0x{action_id}", dlc, data,
+            "\u2014", "\u2014", "\u2014", f"{amp_str} A",
+        )
+        self.hits.append({
+            "action_id": action_id,
+            "dlc":       dlc,
+            "data":      params.get("DATA", ""),
+            "status_id": None,
+            "before":    None,
+            "after":     None,
+            "amperage":  amp_str,
+            "source":    "amp",
+        })
+
+        self.hits_tree.insert("", END, values=row_data, tags=("amp_hit",))
+
+        # Auto-scroll
+        children = self.hits_tree.get_children()
+        if children:
+            self.hits_tree.see(children[-1])
+
+        self._log(
+            f"\u26A1 AMP HIT! Action 0x{action_id} DLC={dlc} [{data}] "
+            f"\u2192 Current spike: {amp_str} A",
+            "hit",
+        )
+
     def handle_fuzz_done(self, params: dict):
         """Handle FUZZ_DONE"""
         self.btn_start.configure(state=NORMAL)
@@ -256,6 +338,29 @@ class FuzzerTab(ttk.Frame):
             bootstyle="success",
         )
         self._log(f"Fuzz complete. {hit_count} hits found.", "info")
+
+    def handle_fuzz_paused(self, params: dict):
+        """Handle FUZZ_PAUSED:MANUAL_RESET_REQD,AMP=X.XX
+
+        The Arduino has detected a hard-latched current state that did not
+        clear after the zero-frame active kill.  Show a warning and the
+        Resume button so the user can power-cycle and continue.
+        """
+        amp_str = params.get("AMP", "?.??")
+
+        self.status_label.configure(
+            text=f"\u26A0 PAUSED \u2014 Manual reset required ({amp_str} A still flowing)",
+            bootstyle="warning",
+        )
+
+        # Show the Resume button
+        self.btn_resume.pack(side=LEFT, padx=(0, PAD_WIDGET))
+
+        self._log(
+            f"\u26A0 HARD LATCH: Current still at {amp_str} A after zero-frame "
+            f"kill. Power-cycle the bench supply, then click \u25B6 Resume.",
+            "hit",
+        )
 
     # ═════════════════════════════════════════════════════════════
     #  Public Accessor

@@ -85,12 +85,12 @@ class SnifferTab(ttk.Frame):
         progress_frame.pack(fill=X, pady=(0, PAD_WIDGET))
 
         self.progress_label = ttk.Label(
-            progress_frame, text="Progress: 0 / 64", font=FONT_BODY,
+            progress_frame, text="Progress: 0 / 60", font=FONT_BODY,
         )
         self.progress_label.pack(side=LEFT, padx=(0, PAD_WIDGET))
 
         self.progress_bar = ttk.Progressbar(
-            progress_frame, maximum=64, mode="determinate",
+            progress_frame, maximum=60, mode="determinate",
             bootstyle="info-striped", length=400,
         )
         self.progress_bar.pack(
@@ -184,7 +184,7 @@ class SnifferTab(ttk.Frame):
         self.scan_progress = 0
         self.responsive_count = 0
         self.progress_bar["value"] = 0
-        self.progress_label.configure(text="Progress: 0 / 64")
+        self.progress_label.configure(text="Progress: 0 / 60")
         self.count_label.configure(text="Responsive IDs: 0")
 
     def _on_cksum_change(self):
@@ -234,7 +234,7 @@ class SnifferTab(ttk.Frame):
             current = int(id_hex, 16) + 1
             self.scan_progress = current
             self.progress_bar["value"] = current
-            self.progress_label.configure(text=f"Progress: {current} / 64")
+            self.progress_label.configure(text=f"Progress: {current} / 60")
         except (ValueError, KeyError):
             pass
 
@@ -268,9 +268,9 @@ class SnifferTab(ttk.Frame):
 
     def handle_sniff_done(self, params: dict):
         """Handle SNIFF_DONE:COUNT=N"""
-        self.progress_bar["value"] = 64
+        self.progress_bar["value"] = 60
         self.progress_label.configure(
-            text="Progress: 64 / 64  \u2713  Complete",
+            text="Progress: 60 / 60  \u2713  Complete",
         )
         self.btn_start.configure(state=NORMAL)
         self.btn_stop.configure(state=DISABLED)

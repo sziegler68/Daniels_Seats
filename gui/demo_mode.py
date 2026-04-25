@@ -43,6 +43,11 @@ FAKE_FUZZ_HITS = [
         "status_id": "2C", "before": "00_FF_00_12", "after": "01_FF_00_12",
     },
     {
+        "action_id": "36", "dlc": 2, "data": "03_C0",
+        "status_id": "33", "before": "10_20_30_40_50_60_70_80",
+        "after": "10_20_30_40_50_60_F0_80",
+    },
+    {
         "action_id": "1F", "dlc": 1, "data": "80",
         "status_id": "1A", "before": "80_00_00_FF_00_40",
         "after": "80_01_00_FF_00_40",
@@ -51,6 +56,13 @@ FAKE_FUZZ_HITS = [
         "action_id": "27", "dlc": 2, "data": "03_C0",
         "status_id": "04", "before": "40_00_00_80", "after": "40_03_00_80",
     },
+]
+
+# Fake current-spike hits ("Silent Hits" caught by INA260)
+FAKE_AMP_HITS = [
+    {"action_id": "0E", "dlc": 1, "data": "FF", "amp": "3.85"},
+    {"action_id": "17", "dlc": 2, "data": "01_80", "amp": "1.42"},
+    {"action_id": "28", "dlc": 1, "data": "40", "amp": "4.71"},
 ]
 
 
@@ -99,14 +111,14 @@ class DemoSimulator:
 
         responsive_idx = 0
 
-        for scan_id in range(64):
+        for scan_id in range(60):
             if self._stop_requested:
                 self._push("INFO", {"MSG": "[DEMO] Sniff aborted"})
                 break
 
             # Send progress
             id_hex = f"{scan_id:02X}"
-            self._push("SNIFF_PROGRESS", {"ID": id_hex, "TOTAL": "64"})
+            self._push("SNIFF_PROGRESS", {"ID": id_hex, "TOTAL": "60"})
 
             # Check if this ID is one of our fake responsive ones
             if responsive_idx < len(FAKE_STATUS_IDS):
@@ -145,14 +157,15 @@ class DemoSimulator:
         self._running = True
 
         self._push("INFO", {
-            "MSG": "[DEMO] Starting simulated fuzz (57 action IDs, "
-                   "7 status IDs)...",
+            "MSG": "[DEMO] Starting simulated fuzz (53 action IDs, "
+                   "7 status IDs, Full Byte Sweep)...",
         })
         time.sleep(0.5)
 
         hit_idx = 0
+        amp_idx = 0
         action_ids = [
-            i for i in range(64)
+            i for i in range(60)
             if f"{i:02X}" not in [s["id"] for s in FAKE_STATUS_IDS]
         ]
 
@@ -197,11 +210,26 @@ class DemoSimulator:
                     })
                     hit_idx += 1
 
+            # Occasionally produce a current-spike hit (purple)
+            if amp_idx < len(FAKE_AMP_HITS):
+                amp = FAKE_AMP_HITS[amp_idx]
+                if int(amp["action_id"], 16) == action_id:
+                    time.sleep(0.1)
+                    self._push("FUZZ_HIT_AMP", {
+                        "ACTION_ID": amp["action_id"],
+                        "DLC":       str(amp["dlc"]),
+                        "DATA":      amp["data"],
+                        "AMP":       amp["amp"],
+                    })
+                    amp_idx += 1
+
             time.sleep(0.15)
 
+        total_hits = hit_idx + amp_idx
         self._push("FUZZ_DONE", {})
         self._push("INFO", {
-            "MSG": f"[DEMO] Fuzz complete. {hit_idx} hits found.",
+            "MSG": f"[DEMO] Fuzz complete. "
+                   f"{hit_idx} LIN hits + {amp_idx} AMP hits found.",
         })
         self._running = False
 
