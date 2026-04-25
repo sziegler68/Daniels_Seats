@@ -9,6 +9,9 @@ data comparison, and a scrolling timestamped event log.
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 import tkinter as tk
+from tkinter import filedialog
+import csv
+import os
 from datetime import datetime
 from styles import *
 
@@ -21,6 +24,7 @@ class FuzzerTab(ttk.Frame):
         self.serial = serial_manager
         self.sniffer_tab = sniffer_tab
         self.hits = []   # List of hit data dicts
+        self.aggregated_ids = {} # Hex ID -> List of filenames
 
         self._build_ui()
 
@@ -79,6 +83,61 @@ class FuzzerTab(ttk.Frame):
             font=FONT_BODY, bootstyle="secondary",
         )
         self.status_label.pack(anchor=W)
+
+        self.status_label.pack(anchor=W)
+
+        # ── Exclude List & Aggregation ────────────────────────────
+        agg_frame_wrap = ttk.Frame(paned, padding=5)
+        paned.add(agg_frame_wrap, weight=0)
+
+        agg_lf = ttk.LabelFrame(
+            agg_frame_wrap, text="  EXCLUDE LIST & AGGREGATION  ",
+        )
+        agg_lf.pack(fill=X)
+        agg_frame = ttk.Frame(agg_lf, padding=PAD_SECTION)
+        agg_frame.pack(fill=BOTH, expand=True)
+
+        agg_top = ttk.Frame(agg_frame)
+        agg_top.pack(fill=X, pady=(0, PAD_WIDGET))
+
+        ttk.Button(
+            agg_top, text="\U0001F4C2 Import Status CSVs...",
+            bootstyle="info",
+            command=self._on_import_csvs,
+        ).pack(side=LEFT, padx=(0, PAD_WIDGET))
+
+        ttk.Button(
+            agg_top, text="\u2716 Clear",
+            bootstyle="danger-outline",
+            command=self._on_clear_csvs,
+        ).pack(side=LEFT, padx=(0, PAD_WIDGET))
+
+        ttk.Label(
+            agg_top, text="Manual Skip IDs (Hex, comma-separated):",
+        ).pack(side=LEFT, padx=(PAD_SECTION, PAD_INNER))
+
+        self.manual_skip_entry = ttk.Entry(agg_top, font=FONT_MONO, width=30)
+        self.manual_skip_entry.pack(side=LEFT, fill=X, expand=True)
+
+        agg_cols = ("id", "occurrences", "sources")
+        self.agg_tree = ttk.Treeview(
+            agg_frame, columns=agg_cols, show="headings",
+            bootstyle="info", height=3,
+        )
+        self.agg_tree.heading("id", text="ID (Hex)", anchor=W)
+        self.agg_tree.heading("occurrences", text="Total Occurrences", anchor=CENTER)
+        self.agg_tree.heading("sources", text="Source Files", anchor=W)
+
+        self.agg_tree.column("id", width=80, minwidth=60)
+        self.agg_tree.column("occurrences", width=120, minwidth=100, anchor=CENTER)
+        self.agg_tree.column("sources", width=300, minwidth=150)
+
+        agg_scroll = ttk.Scrollbar(
+            agg_frame, orient=VERTICAL, command=self.agg_tree.yview,
+        )
+        self.agg_tree.configure(yscrollcommand=agg_scroll.set)
+        self.agg_tree.pack(side=LEFT, fill=BOTH, expand=True)
+        agg_scroll.pack(side=RIGHT, fill=Y)
 
         # ── Action ID Hits Table ──────────────────────────────────
         mid_frame = ttk.Frame(paned, padding=5)
@@ -167,17 +226,44 @@ class FuzzerTab(ttk.Frame):
         if not self.serial.is_connected():
             return
 
-        # Get known responsive IDs from sniffer to skip & monitor
-        active_ids = self.sniffer_tab.get_active_ids()
+        # 1. Get known responsive IDs from sniffer (Current Session)
+        sniffer_ids = self.sniffer_tab.get_active_ids()
 
-        if not active_ids:
+        # 2. Get aggregated IDs from imported CSVs
+        agg_ids = list(self.aggregated_ids.keys())
+
+        # 3. Get manual skip IDs
+        manual_ids = []
+        raw_manual = self.manual_skip_entry.get().strip()
+        if raw_manual:
+            for part in raw_manual.split(","):
+                part = part.strip()
+                if part:
+                    # Ensure it looks like a hex string if they typed "1A" instead of "0x1A"
+                    if not part.lower().startswith("0x"):
+                        part = f"0x{part}"
+                    manual_ids.append(part)
+
+        # 4. Deduplicate all IDs into a set
+        all_hex_ids = set(sniffer_ids + agg_ids + manual_ids)
+
+        if not all_hex_ids:
             self._log(
-                "\u26A0 No Status IDs known. Run a Sniffer scan first "
+                "\u26A0 No Status IDs known. Run a Sniffer scan or import CSVs "
                 "for best results.",
                 "hit",
             )
 
-        skip_str = ",".join(active_ids)
+        # 5. Convert hex IDs to decimal strings for the Arduino parser
+        dec_ids = []
+        for hid in all_hex_ids:
+            try:
+                val = int(hid, 16)
+                dec_ids.append(str(val))
+            except ValueError:
+                pass
+
+        skip_str = ",".join(dec_ids)
         cmd = f"START_FUZZ:SKIP={skip_str}" if skip_str else "START_FUZZ"
 
         self.btn_start.configure(state=DISABLED)
@@ -218,6 +304,55 @@ class FuzzerTab(ttk.Frame):
             text="Status: Resuming...", bootstyle="info",
         )
         self._log("RESUME_FUZZ sent \u2014 fuzzer will continue", "info")
+
+    def _on_import_csvs(self):
+        filepaths = filedialog.askopenfilenames(
+            title="Select Status ID CSVs to Import",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        if not filepaths:
+            return
+
+        imported_count = 0
+        for fp in filepaths:
+            filename = os.path.basename(fp)
+            try:
+                with open(fp, mode='r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    # Check if 'ID' column exists
+                    if not reader.fieldnames or "ID" not in reader.fieldnames:
+                        self._log(f"Skipped {filename} (no 'ID' column found)", "hit")
+                        continue
+
+                    for row in reader:
+                        id_hex = row.get("ID", "").strip()
+                        if id_hex.startswith("0x"):
+                            id_hex = id_hex.lower() # Normalize to lowercase hex
+                            if id_hex not in self.aggregated_ids:
+                                self.aggregated_ids[id_hex] = []
+                            if filename not in self.aggregated_ids[id_hex]:
+                                self.aggregated_ids[id_hex].append(filename)
+                                imported_count += 1
+            except Exception as e:
+                self._log(f"Error reading {filename}: {e}", "hit")
+
+        self._refresh_agg_tree()
+        self._log(f"Imported {imported_count} new unique ID/source mappings.", "info")
+
+    def _on_clear_csvs(self):
+        self.aggregated_ids.clear()
+        self._refresh_agg_tree()
+        self._log("Aggregated exclude list cleared.", "info")
+
+    def _refresh_agg_tree(self):
+        self.agg_tree.delete(*self.agg_tree.get_children())
+        for id_hex in sorted(self.aggregated_ids.keys()):
+            sources = self.aggregated_ids[id_hex]
+            self.agg_tree.insert("", END, values=(
+                id_hex,
+                len(sources),
+                ", ".join(sources)
+            ))
 
     # ═════════════════════════════════════════════════════════════
     #  Event Log Helper
