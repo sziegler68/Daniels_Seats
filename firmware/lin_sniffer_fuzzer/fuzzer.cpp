@@ -203,14 +203,17 @@ bool Fuzzer::checkForStop() {
             _stopRequested = true;
             return true;
         }
-        if (cmd == "PAUSE_FUZZ") {
+        else if (cmd == "PAUSE_FUZZ") {
             _pauseRequested = true;
         }
-        if (cmd == "RESUME_FUZZ") {
+        else if (cmd == "RESUME_FUZZ") {
             _pauseRequested = false;
         }
-        if (cmd == "RECAPTURE_BASELINE") {
+        else if (cmd == "RECAPTURE_BASELINE") {
             _recaptureRequested = true;
+        }
+        else {
+            Serial.println("ERROR:MSG=Fuzzer is running, command ignored: " + cmd);
         }
     }
 
