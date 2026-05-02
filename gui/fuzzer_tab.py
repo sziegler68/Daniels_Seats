@@ -70,14 +70,26 @@ class FuzzerTab(ttk.Frame):
         )
         self.btn_stop.pack(side=LEFT, padx=(0, PAD_WIDGET))
 
+        self.btn_resume = ttk.Button(
+            btn_row, text="\u25B6  Resume", bootstyle="success",
+            command=self._on_resume_fuzz, state=DISABLED, width=12,
+        )
+        self.btn_resume.pack(side=LEFT, padx=(0, PAD_WIDGET))
+
         self.btn_recapture = ttk.Button(
             btn_row, text="\u27F2  Recapture Baseline",
             bootstyle="info-outline",
             command=self._on_recapture_baseline, width=22,
         )
-        self.btn_recapture.pack(side=LEFT, padx=(0, PAD_WIDGET))
+        self.btn_recapture.pack(side=LEFT, padx=(0, PAD_SECTION))
 
-
+        # Pause-on-Hit toggle
+        self.pause_on_hit_var = tk.BooleanVar(value=False)
+        self.chk_pause_on_hit = ttk.Checkbutton(
+            btn_row, text="Pause on Hit",
+            variable=self.pause_on_hit_var, bootstyle="warning-round-toggle",
+        )
+        self.chk_pause_on_hit.pack(side=LEFT, padx=(0, PAD_WIDGET))
 
         self.status_label = ttk.Label(
             ctrl_frame, text="Status: Idle",
@@ -149,6 +161,27 @@ class FuzzerTab(ttk.Frame):
         hits_lf.pack(fill=BOTH, expand=True)
         hits_frame = ttk.Frame(hits_lf, padding=PAD_SECTION)
         hits_frame.pack(fill=BOTH, expand=True)
+
+        # Hits toolbar row
+        hits_toolbar = ttk.Frame(hits_frame)
+        hits_toolbar.pack(fill=X, pady=(0, PAD_WIDGET))
+
+        ttk.Button(
+            hits_toolbar, text="\U0001F4BE Export Hits...",
+            bootstyle="success-outline",
+            command=self._on_export_hits,
+        ).pack(side=LEFT, padx=(0, PAD_WIDGET))
+
+        ttk.Button(
+            hits_toolbar, text="\u2716 Clear Hits",
+            bootstyle="danger-outline",
+            command=self._on_clear_hits,
+        ).pack(side=LEFT, padx=(0, PAD_WIDGET))
+
+        self.hit_count_label = ttk.Label(
+            hits_toolbar, text="Hits: 0", font=FONT_BODY,
+        )
+        self.hit_count_label.pack(side=RIGHT)
 
         columns = (
             "action_id", "dlc", "payload",
@@ -290,8 +323,18 @@ class FuzzerTab(ttk.Frame):
         self.serial.send_command("STOP_FUZZ")
         self.btn_start.configure(state=NORMAL)
         self.btn_stop.configure(state=DISABLED)
+        self.btn_resume.configure(state=DISABLED)
         self.status_label.configure(
             text="Status: Stopped", bootstyle="secondary",
+        )
+
+    def _on_resume_fuzz(self):
+        """Resume a paused fuzz session."""
+        self.serial.send_command("RESUME_FUZZ")
+        self.btn_resume.configure(state=DISABLED)
+        self.btn_stop.configure(state=NORMAL)
+        self.status_label.configure(
+            text="Status: Fuzzing...", bootstyle="warning",
         )
 
     def _on_recapture_baseline(self):
@@ -305,7 +348,40 @@ class FuzzerTab(ttk.Frame):
         self.serial.send_command("RECAPTURE_BASELINE")
         self._log("Baseline recapture requested", "info")
 
+    def _on_export_hits(self):
+        """Export all hits to a CSV file."""
+        if not self.hits:
+            self._log("No hits to export.", "info")
+            return
 
+        filepath = filedialog.asksaveasfilename(
+            title="Export Hits As...",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+            initialfile=f"fuzz_hits_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        )
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    "action_id", "dlc", "data", "status_id",
+                    "before", "after", "amperage", "source",
+                ])
+                writer.writeheader()
+                for hit in self.hits:
+                    writer.writerow(hit)
+            self._log(f"Exported {len(self.hits)} hits to {os.path.basename(filepath)}", "info")
+        except Exception as e:
+            self._log(f"Export failed: {e}", "hit")
+
+    def _on_clear_hits(self):
+        """Clear all hits from the table and internal list."""
+        self.hits.clear()
+        self.hits_tree.delete(*self.hits_tree.get_children())
+        self.hit_count_label.configure(text="Hits: 0")
+        self._log("Hits cleared.", "info")
 
     def _on_import_csvs(self):
         filepaths = filedialog.askopenfilenames(
@@ -420,11 +496,17 @@ class FuzzerTab(ttk.Frame):
         if children:
             self.hits_tree.see(children[-1])
 
+        self.hit_count_label.configure(text=f"Hits: {len(self.hits)}")
+
         self._log(
             f"\U0001F4A5 HIT! Action 0x{action_id} DLC={dlc} [{data}] \u2192 "
             f"Status 0x{status_id} changed: [{before}] \u2192 [{after}]",
             "hit",
         )
+
+        # Pause-on-hit: send PAUSE_FUZZ if toggle is on
+        if self.pause_on_hit_var.get():
+            self.serial.send_command("PAUSE_FUZZ")
 
     def handle_fuzz_hit_amp(self, params: dict):
         """Handle FUZZ_HIT_AMP:ACTION_ID=XX,DLC=N,DATA=...,AMP=X.XX
@@ -459,22 +541,48 @@ class FuzzerTab(ttk.Frame):
         if children:
             self.hits_tree.see(children[-1])
 
+        self.hit_count_label.configure(text=f"Hits: {len(self.hits)}")
+
         self._log(
             f"\u26A1 AMP HIT! Action 0x{action_id} DLC={dlc} [{data}] "
             f"\u2192 Current spike: {amp_str} A",
             "hit",
         )
 
+        # Pause-on-hit: send PAUSE_FUZZ if toggle is on
+        if self.pause_on_hit_var.get():
+            self.serial.send_command("PAUSE_FUZZ")
+
     def handle_fuzz_done(self, params: dict):
         """Handle FUZZ_DONE"""
         self.btn_start.configure(state=NORMAL)
         self.btn_stop.configure(state=DISABLED)
+        self.btn_resume.configure(state=DISABLED)
         hit_count = len(self.hits)
         self.status_label.configure(
             text=f"Status: Complete \u2014 {hit_count} hits found",
             bootstyle="success",
         )
         self._log(f"Fuzz complete. {hit_count} hits found.", "info")
+
+    def handle_fuzz_paused(self, params: dict):
+        """Handle FUZZ_PAUSED — Arduino is waiting for RESUME_FUZZ."""
+        self.btn_resume.configure(state=NORMAL)
+        self.btn_stop.configure(state=NORMAL)
+        self.status_label.configure(
+            text="Status: PAUSED \u2014 examine hit, then Resume or Stop",
+            bootstyle="info",
+        )
+        self._log("\u23F8 Fuzzer paused. Click Resume to continue.", "info")
+
+    def handle_fuzz_resumed(self, params: dict):
+        """Handle FUZZ_RESUMED — Arduino has resumed fuzzing."""
+        self.btn_resume.configure(state=DISABLED)
+        self.btn_stop.configure(state=NORMAL)
+        self.status_label.configure(
+            text="Status: Fuzzing...", bootstyle="warning",
+        )
+        self._log("\u25B6 Fuzzer resumed.", "info")
 
     def handle_fatal_lockup(self, params: dict):
         """Handle FATAL_LOCKUP:ID=XX,DLC=N,DATA=XX_XX,AMPS=X.XX

@@ -34,6 +34,7 @@ Fuzzer::Fuzzer()
     , _running(false)
     , _stopRequested(false)
     , _recaptureRequested(false)
+    , _pauseRequested(false)
     , _blacklistCount(0)
 {
 }
@@ -171,6 +172,13 @@ void Fuzzer::requestStop() {
     _stopRequested = true;
 }
 
+void Fuzzer::requestPause() {
+    _pauseRequested = true;
+}
+
+void Fuzzer::resume() {
+    _pauseRequested = false;
+}
 
 bool Fuzzer::isRunning() const {
     return _running;
@@ -178,7 +186,7 @@ bool Fuzzer::isRunning() const {
 
 
 // ─────────────────────────────────────────────────────────────────
-//  Stop-Command Check
+//  Stop/Pause Command Check
 // ─────────────────────────────────────────────────────────────────
 
 bool Fuzzer::checkForStop() {
@@ -191,11 +199,36 @@ bool Fuzzer::checkForStop() {
             _stopRequested = true;
             return true;
         }
+        if (cmd == "PAUSE_FUZZ") {
+            _pauseRequested = true;
+        }
+        if (cmd == "RESUME_FUZZ") {
+            _pauseRequested = false;
+        }
         if (cmd == "RECAPTURE_BASELINE") {
             _recaptureRequested = true;
-            // Don't return true — this is not a stop request
         }
     }
+
+    // If pause was requested, block here until resumed or stopped
+    if (_pauseRequested) {
+        Serial.println("FUZZ_PAUSED");
+        while (_pauseRequested && !_stopRequested) {
+            if (Serial.available()) {
+                String cmd = Serial.readStringUntil('\n');
+                cmd.trim();
+                if (cmd == "RESUME_FUZZ") {
+                    _pauseRequested = false;
+                    Serial.println("FUZZ_RESUMED");
+                } else if (cmd == "STOP_FUZZ") {
+                    _stopRequested = true;
+                    return true;
+                }
+            }
+            delay(10);  // Avoid busy-waiting
+        }
+    }
+
     return false;
 }
 

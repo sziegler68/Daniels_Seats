@@ -89,6 +89,12 @@ public:
     /** Request that an in-progress fuzz be aborted. */
     void requestStop();
 
+    /** Request that the fuzz pause after the current payload. */
+    void requestPause();
+
+    /** Resume a paused fuzz. */
+    void resume();
+
     /** True while fuzzing is in progress. */
     bool isRunning() const;
 
@@ -99,6 +105,7 @@ private:
     volatile bool _running;
     volatile bool _stopRequested;
     volatile bool _recaptureRequested;
+    volatile bool _pauseRequested;
 
     // Payload blacklist
     BlacklistEntry _blacklist[MAX_BLACKLIST_ENTRIES];

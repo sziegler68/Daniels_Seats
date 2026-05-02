@@ -92,10 +92,16 @@ class LinBusAnalyzer(ttk.Window):
         self.conn_status.pack(side=LEFT, padx=(0, PAD_SECTION))
 
         self.voltage_label = ttk.Label(
-            conn_frame, text="12.00V", bootstyle="info",
+            conn_frame, text="\u26A1 --V", bootstyle="info",
             font=FONT_SUBHEADING
         )
-        self.voltage_label.pack(side=RIGHT, padx=(0, PAD_SECTION))
+        self.voltage_label.pack(side=RIGHT, padx=(0, PAD_WIDGET))
+
+        self.current_label = ttk.Label(
+            conn_frame, text="\u2301 --A", bootstyle="warning",
+            font=FONT_SUBHEADING
+        )
+        self.current_label.pack(side=RIGHT, padx=(0, PAD_SECTION))
 
         # ── LIN Baud Rate Selector ────────────────────────────────
         baud_frame = ttk.Frame(conn_frame)
@@ -309,17 +315,20 @@ class LinBusAnalyzer(ttk.Window):
             self.fuzzer_tab.handle_fuzz_hit_amp(p)
         elif t == "FUZZ_DONE":
             self.fuzzer_tab.handle_fuzz_done(p)
+        elif t == "FUZZ_PAUSED":
+            self.fuzzer_tab.handle_fuzz_paused(p)
+        elif t == "FUZZ_RESUMED":
+            self.fuzzer_tab.handle_fuzz_resumed(p)
         elif t == "FATAL_LOCKUP":
             self.fuzzer_tab.handle_fatal_lockup(p)
 
         # General responses
-        elif t == "VOLTAGE":
-            # Real-time bench supply voltage (Format: VOLTAGE:12.15)
-            try:
-                volts_str = msg.raw.split(":")[1]
-                self.voltage_label.configure(text=f"{volts_str}V")
-            except IndexError:
-                pass
+        elif t == "POWER":
+            # Real-time bench power (Format: POWER:V=12.15,A=0.450)
+            volts = p.get("V", "--")
+            amps  = p.get("A", "--")
+            self.voltage_label.configure(text=f"\u26A1 {volts}V")
+            self.current_label.configure(text=f"\u2301 {amps}A")
         elif t == "PONG":
             self.status_text.configure(
                 text="Arduino responded: PONG \u2713",

@@ -35,7 +35,8 @@
 #define SLP_PIN     2
 
 // Serial1 TX pin — needed for manual break field generation.
-#define TX1_PIN     PIN_SERIAL1_TX
+// On the Nano Every, Serial1 TX is Pin 1 (PA0).
+#define TX1_PIN     1
 
 // Baud rates
 #define LIN_BAUD    19200      // LIN bus speed
@@ -137,13 +138,16 @@ void loop() {
         }
     }
 
-    // ── Periodic voltage telemetry (1s, idle only) ──────────────
+    // ── Periodic power telemetry (1s, idle only) ─────────────────
     if (currentSensor.isAvailable()
         && !sniffer.isRunning() && !fuzzer.isRunning()) {
         if (millis() - lastVoltageReport >= VOLTAGE_REPORT_INTERVAL_MS) {
             float volts = currentSensor.readVoltageMV() / 1000.0f;
-            Serial.print("VOLTAGE:");
-            Serial.println(volts, 2);
+            float amps  = currentSensor.readCurrentMA() / 1000.0f;
+            Serial.print("POWER:V=");
+            Serial.print(volts, 2);
+            Serial.print(",A=");
+            Serial.println(amps, 3);
             lastVoltageReport = millis();
         }
     }
@@ -217,6 +221,12 @@ void handleCommand(const String& cmd) {
     }
     else if (cmd == "STOP_FUZZ") {
         fuzzer.requestStop();
+    }
+    else if (cmd == "PAUSE_FUZZ") {
+        fuzzer.requestPause();
+    }
+    else if (cmd == "RESUME_FUZZ") {
+        fuzzer.resume();
     }
     else if (cmd == "RECAPTURE_BASELINE") {
         // If the fuzzer is running, it will pick this up via checkForStop().
