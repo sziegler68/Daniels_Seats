@@ -71,14 +71,10 @@ public:
 
     /**
      * Start the fuzzing process.
-     * @param skipIds    Array of IDs to exclude from fuzzing
-     * @param skipCount  Number of IDs in the skipIds array
-     * 
-     * Automatically excludes known Status IDs (from sniffer results)
-     * and uses them as the monitoring set for change detection.
-     * @param skipCount Number of valid elements in skipIds.
-     * @param dlcs Array of DLC values to fuzz (e.g. {2,4,8}).
-     * @param dlcCount Number of DLCs.
+     * @param skipIds    Array of IDs to exclude from fuzzing.
+     * @param skipCount  Number of valid elements in skipIds.
+     * @param dlcs       Array of DLC values to fuzz (e.g. {2,4,8}). NULL = all.
+     * @param dlcCount   Number of elements in dlcs. 0 = use default {2,4,8}.
      */
     void startFuzz(const uint8_t* skipIds, uint8_t skipCount, const uint8_t* dlcs = nullptr, uint8_t dlcCount = 0);
 

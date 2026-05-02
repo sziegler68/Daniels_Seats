@@ -35,6 +35,7 @@ class FuzzerTab(ttk.Frame):
 
         self._loop_hit_job = None
         self._loop_active = False
+        self._fuzzer_paused = False
 
         self._build_ui()
 
@@ -339,6 +340,7 @@ class FuzzerTab(ttk.Frame):
 
         self.btn_start.configure(state=DISABLED)
         self.btn_stop.configure(state=NORMAL)
+        self._fuzzer_paused = False
         self.status_label.configure(
             text="Status: Fuzzing...", bootstyle="warning",
         )
@@ -362,9 +364,11 @@ class FuzzerTab(ttk.Frame):
     def _on_stop_fuzz(self):
         self.serial.send_command("STOP_FUZZ")
         self._stop_loop()
+        self._fuzzer_paused = False
         self.btn_start.configure(state=NORMAL)
         self.btn_stop.configure(state=DISABLED)
         self.btn_resume.configure(state=DISABLED)
+        self.btn_loop_hit.configure(state=DISABLED)
         self.status_label.configure(
             text="Status: Stopped", bootstyle="secondary",
         )
@@ -372,6 +376,7 @@ class FuzzerTab(ttk.Frame):
     def _on_resume_fuzz(self):
         """Resume a paused fuzz session."""
         self._stop_loop()
+        self._fuzzer_paused = False
         self.serial.send_command("RESUME_FUZZ")
         self.btn_resume.configure(state=DISABLED)
         self.btn_stop.configure(state=NORMAL)
@@ -430,14 +435,11 @@ class FuzzerTab(ttk.Frame):
     def _on_hit_selected(self, event):
         """Enable the Loop button if a hit is selected and fuzzer is paused or stopped."""
         selected = self.hits_tree.selection()
-        # Enable if something is selected AND we are not actively fuzzing
-        if selected and str(self.btn_stop.cget("state")) != str(NORMAL):
+        if selected and (self._fuzzer_paused or not self._loop_active):
             self.btn_loop_hit.configure(state=NORMAL)
-        elif selected and str(self.btn_resume.cget("state")) == str(NORMAL):
-            # Also allow if paused
-            self.btn_loop_hit.configure(state=NORMAL)
-        else:
-            self.btn_loop_hit.configure(state=DISABLED)
+        elif not selected:
+            if not self._loop_active:
+                self.btn_loop_hit.configure(state=DISABLED)
             
     def _on_toggle_loop_hit(self):
         """Start or stop looping the selected hit."""
@@ -627,6 +629,11 @@ class FuzzerTab(ttk.Frame):
         # Pause-on-hit: send PAUSE_FUZZ if toggle is on
         if self.pause_on_hit_var.get():
             self.serial.send_command("PAUSE_FUZZ")
+            # Auto-select the newest hit row so Loop button is ready
+            children = self.hits_tree.get_children()
+            if children:
+                self.hits_tree.selection_set(children[-1])
+                self.hits_tree.focus(children[-1])
 
     def handle_fuzz_hit_amp(self, params: dict):
         """Handle FUZZ_HIT_AMP:ACTION_ID=XX,DLC=N,DATA=...,AMP=X.XX
@@ -672,6 +679,11 @@ class FuzzerTab(ttk.Frame):
         # Pause-on-hit: send PAUSE_FUZZ if toggle is on
         if self.pause_on_hit_var.get():
             self.serial.send_command("PAUSE_FUZZ")
+            # Auto-select the newest hit row so Loop button is ready
+            children = self.hits_tree.get_children()
+            if children:
+                self.hits_tree.selection_set(children[-1])
+                self.hits_tree.focus(children[-1])
 
     def handle_fuzz_done(self, params: dict):
         """Handle FUZZ_DONE"""
@@ -687,18 +699,24 @@ class FuzzerTab(ttk.Frame):
 
     def handle_fuzz_paused(self, params: dict):
         """Handle FUZZ_PAUSED — Arduino is waiting for RESUME_FUZZ."""
+        self._fuzzer_paused = True
         self.btn_resume.configure(state=NORMAL)
         self.btn_stop.configure(state=NORMAL)
+        # Enable loop button if a hit is selected
+        if self.hits_tree.selection():
+            self.btn_loop_hit.configure(state=NORMAL)
         self.status_label.configure(
-            text="Status: PAUSED \u2014 examine hit, then Resume or Stop",
+            text="Status: PAUSED \u2014 examine hit, then Loop / Resume / Stop",
             bootstyle="info",
         )
-        self._log("\u23F8 Fuzzer paused. Click Resume to continue.", "info")
+        self._log("\u23F8 Fuzzer paused. Click Loop to test the hit, Resume to continue.", "info")
 
     def handle_fuzz_resumed(self, params: dict):
         """Handle FUZZ_RESUMED — Arduino has resumed fuzzing."""
+        self._fuzzer_paused = False
         self.btn_resume.configure(state=DISABLED)
         self.btn_stop.configure(state=NORMAL)
+        self.btn_loop_hit.configure(state=DISABLED)
         self.status_label.configure(
             text="Status: Fuzzing...", bootstyle="warning",
         )

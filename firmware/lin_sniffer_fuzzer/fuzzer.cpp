@@ -234,6 +234,48 @@ bool Fuzzer::checkForStop() {
                 } else if (cmd == "STOP_FUZZ") {
                     _stopRequested = true;
                     return true;
+                } else if (cmd.startsWith("SEND_FRAME") && _lin) {
+                    // Allow manual frame injection while paused
+                    int idIdx   = cmd.indexOf("ID=");
+                    int dlcIdx  = cmd.indexOf("DLC=");
+                    int dataIdx = cmd.indexOf("DATA=");
+                    if (idIdx >= 0 && dlcIdx >= 0 && dataIdx >= 0) {
+                        String idStr = cmd.substring(idIdx + 3, cmd.indexOf(',', idIdx));
+                        uint8_t id   = (uint8_t)strtol(idStr.c_str(), NULL, 16);
+
+                        String dlcStr = cmd.substring(dlcIdx + 4, cmd.indexOf(',', dlcIdx));
+                        uint8_t dlc   = (uint8_t)dlcStr.toInt();
+
+                        String dataStr = cmd.substring(dataIdx + 5);
+                        uint8_t data[LIN_MAX_DATA_LEN] = {0};
+                        uint8_t dataCount = 0;
+
+                        while (dataStr.length() > 0 && dataCount < dlc) {
+                            int sepIdx = dataStr.indexOf('_');
+                            String byteStr;
+                            if (sepIdx >= 0) {
+                                byteStr = dataStr.substring(0, sepIdx);
+                                dataStr = dataStr.substring(sepIdx + 1);
+                            } else {
+                                byteStr = dataStr;
+                                dataStr = "";
+                            }
+                            byteStr.trim();
+                            if (byteStr.length() > 0) {
+                                data[dataCount++] = (uint8_t)strtol(byteStr.c_str(), NULL, 16);
+                            }
+                        }
+
+                        if (dataCount == dlc) {
+                            _lin->sendHeader(id);
+                            _lin->sendResponse(id, data, dlc);
+                            Serial.print("INFO:MSG=Frame sent (paused): ID=0x");
+                            if (id < 0x10) Serial.print("0");
+                            Serial.print(id, HEX);
+                            Serial.print(" DLC=");
+                            Serial.println(dlc);
+                        }
+                    }
                 }
             }
             delay(10);  // Avoid busy-waiting

@@ -224,10 +224,32 @@ void handleCommand(const String& cmd) {
         int dlcIdx = cmd.indexOf("DLC=");
         if (dlcIdx >= 0) {
             dlcCount = 0;
-            String dlcStr = cmd.substring(dlcIdx + 4, cmd.indexOf(';', dlcIdx) >= 0 ? cmd.indexOf(';', dlcIdx) : cmd.length());
-            if (dlcStr.indexOf('2') >= 0) dlcs[dlcCount++] = 2;
-            if (dlcStr.indexOf('4') >= 0) dlcs[dlcCount++] = 4;
-            if (dlcStr.indexOf('8') >= 0) dlcs[dlcCount++] = 8;
+            int dlcEnd = cmd.indexOf(';', dlcIdx);
+            if (dlcEnd < 0) dlcEnd = cmd.length();
+            String dlcStr = cmd.substring(dlcIdx + 4, dlcEnd);
+            
+            // Tokenize by comma: "2,4,8" or "8" or "2,8"
+            while (dlcStr.length() > 0 && dlcCount < 3) {
+                int sep = dlcStr.indexOf(',');
+                String tok;
+                if (sep >= 0) {
+                    tok = dlcStr.substring(0, sep);
+                    dlcStr = dlcStr.substring(sep + 1);
+                } else {
+                    tok = dlcStr;
+                    dlcStr = "";
+                }
+                tok.trim();
+                int val = tok.toInt();
+                if (val == 2 || val == 4 || val == 8) {
+                    dlcs[dlcCount++] = (uint8_t)val;
+                }
+            }
+            if (dlcCount == 0) {
+                // Fallback if parsing produced nothing
+                dlcs[0] = 2; dlcs[1] = 4; dlcs[2] = 8;
+                dlcCount = 3;
+            }
         }
 
         fuzzer.startFuzz(skipIds, skipCount, dlcs, dlcCount);
