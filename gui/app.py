@@ -89,7 +89,13 @@ class LinBusAnalyzer(ttk.Window):
             conn_frame, text="\u25CF Disconnected",
             font=FONT_BODY, bootstyle="danger",
         )
-        self.conn_status.pack(side=LEFT, padx=(PAD_WIDGET, 0))
+        self.conn_status.pack(side=LEFT, padx=(0, PAD_SECTION))
+
+        self.voltage_label = ttk.Label(
+            conn_frame, text="12.00V", bootstyle="info",
+            font=FONT_SUBHEADING
+        )
+        self.voltage_label.pack(side=RIGHT, padx=(0, PAD_SECTION))
 
         # ── LIN Baud Rate Selector ────────────────────────────────
         baud_frame = ttk.Frame(conn_frame)
@@ -303,14 +309,17 @@ class LinBusAnalyzer(ttk.Window):
             self.fuzzer_tab.handle_fuzz_hit_amp(p)
         elif t == "FUZZ_DONE":
             self.fuzzer_tab.handle_fuzz_done(p)
-        elif t == "FUZZ_PAUSED":
-            self.fuzzer_tab.handle_fuzz_paused(p)
-
-        # Emergency stop (INA260 overcurrent)
-        elif t == "EMERGENCY_STOP":
-            self._handle_emergency_stop(p)
+        elif t == "FATAL_LOCKUP":
+            self.fuzzer_tab.handle_fatal_lockup(p)
 
         # General responses
+        elif t == "VOLTAGE":
+            # Real-time bench supply voltage (Format: VOLTAGE:12.15)
+            try:
+                volts_str = msg.raw.split(":")[1]
+                self.voltage_label.configure(text=f"{volts_str}V")
+            except IndexError:
+                pass
         elif t == "PONG":
             self.status_text.configure(
                 text="Arduino responded: PONG \u2713",
@@ -339,43 +348,6 @@ class LinBusAnalyzer(ttk.Window):
     # ═════════════════════════════════════════════════════════════
     #  Shutdown
     # ═════════════════════════════════════════════════════════════
-
-    def _handle_emergency_stop(self, params: dict):
-        """Handle EMERGENCY_STOP:OVERCURRENT,AMP=X.XX from the Arduino.
-
-        Triggered by the INA260 hardware interrupt when current exceeds 12 A.
-        Shows a blocking danger dialog so the user can investigate before
-        any further commands are sent.
-        """
-        amp_str = params.get("AMP", "?.??")
-
-        # Update status bar
-        self.status_text.configure(
-            text=f"\u26A1 EMERGENCY: Overcurrent detected — {amp_str} A",
-        )
-
-        # Log to the live log
-        self.live_log_tab.handle_message(
-            type("FakeMsg", (), {
-                "msg_type": "ERROR",
-                "params": {"MSG": f"OVERCURRENT: {amp_str} A — All operations halted"},
-                "raw": f"EMERGENCY_STOP:OVERCURRENT,AMP={amp_str}",
-            })()
-        )
-
-        # Show a blocking danger dialog
-        from tkinter import messagebox
-        messagebox.showerror(
-            "⚡ EMERGENCY — OVERCURRENT",
-            f"The INA260 current sensor detected {amp_str} A on the seat module "
-            f"power line, which exceeds the 12 A safety threshold.\n\n"
-            f"All fuzzing, sniffing, and monitoring operations have been "
-            f"immediately halted by the Arduino.\n\n"
-            f"Please:\n"
-            f"  1. Check your bench PSU amperage display\n"
-            f"  2. Power-cycle the seat module if needed\n"
-            f"  3. Click OK to resume normal operation",
-        )
 
     def _on_close(self):
         """Clean shutdown: disconnect serial, stop demo, destroy window."""

@@ -1,14 +1,17 @@
 /**
- * INA260 Current Sensor Module
+ * INA260 Current & Voltage Sensor Module
  *
  * Wraps the Adafruit_INA260 library to provide:
  *   - Configurable conversion time + averaging (17.6 ms integration window)
  *   - Idle current baseline capture (10-sample average)
  *   - Physical hit detection (current > baseline + threshold)
- *   - Hardware overcurrent alert on a configurable pin (12 A limit)
+ *   - Real-time 12V bus voltage reading (VB pad bridged on breakout)
  *
  * The INA260 communicates over I2C (A4/SDA, A5/SCL on the Nano Every)
  * and is wired IN SERIES with the seat module's 12 V power lead.
+ *
+ * Safety is handled by a physical 15A inline fuse and software polling.
+ * No hardware interrupt / ALERT pin is used.
  */
 
 #ifndef CURRENT_SENSOR_H
@@ -23,9 +26,6 @@
 /** Delta above idle baseline that qualifies as a "Physical Hit" (mA). */
 #define CURRENT_THRESHOLD_MA       500.0f
 
-/** Absolute overcurrent safety limit that triggers a hardware alert (mA). */
-#define CURRENT_OVERCURRENT_MA     12000.0f
-
 /** Number of samples used to compute the idle-current baseline. */
 #define CURRENT_BASELINE_SAMPLES   10
 
@@ -35,15 +35,12 @@ public:
     CurrentSensor();
 
     /**
-     * Initialise the INA260 over I2C and configure the hardware alert.
+     * Initialise the INA260 over I2C.
      *
-     * @param alertPin  Arduino digital pin connected to the INA260 ALERT
-     *                  output (active-LOW, open-drain).  Pass 255 to
-     *                  disable the alert feature.
      * @param i2cAddr   I2C address of the INA260 (default 0x40).
      * @return true if the sensor was found and configured.
      */
-    bool begin(uint8_t alertPin = 3, uint8_t i2cAddr = 0x40);
+    bool begin(uint8_t i2cAddr = 0x40);
 
     /** True after a successful begin(). */
     bool isAvailable() const;
@@ -52,6 +49,11 @@ public:
 
     /** Read the current right now (mA).  Returns 0 if sensor unavailable. */
     float readCurrentMA();
+
+    /** Read the bus voltage right now (mV).  Returns 0 if unavailable.
+     *  Requires the VB solder pad to be bridged on the INA260 breakout
+     *  so that VIN+ is routed to the internal bus voltage ADC. */
+    float readVoltageMV();
 
     // ── Baseline ─────────────────────────────────────────────────
 
@@ -79,16 +81,10 @@ public:
      */
     bool checkForPhysicalHit(float* outMA = nullptr);
 
-    // ── Alert Management ─────────────────────────────────────────
-
-    /** Clear the INA260's latched alert flag (call after handling). */
-    void clearAlert();
-
 private:
     Adafruit_INA260 _ina;
     bool   _available;
     float  _baselineMA;
-    uint8_t _alertPin;
 };
 
 #endif // CURRENT_SENSOR_H

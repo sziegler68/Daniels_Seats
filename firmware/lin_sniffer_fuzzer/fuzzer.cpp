@@ -3,13 +3,17 @@
  * 
  * Workflow per Action ID:
  *   1. Take baseline snapshot of all known Status IDs
- *   2. For each candidate DLC (1–8), run a Full Byte Sweep:
+ *   2. For each candidate DLC (2, 4, 8), run a Full Byte Sweep:
  *      a. For each byte position (0 to DLC-1):
  *         i.   Set all payload bytes to 0x00
  *         ii.  Sweep the target byte from 0x00 to 0xFF
- *         iii. For each value: send header + response, wait 30 ms,
- *              then poll all Status IDs and compare against baseline
- *         iv.  If any Status ID changed: report FUZZ_HIT, update baseline
+ *         iii. For each value:
+ *              - Read INA260 baseline current (~1ms)
+ *              - Send header + response (~10ms)
+ *              - Poll all Status IDs (~50-60ms natural delay)
+ *              - Read INA260 active current (~1ms)
+ *              - Compare for LIN hits and amp hits
+ *         iv.  If amp hit: inject all-zeros cooldown, poll for decay
  *   3. Move to next Action ID
  * 
  * Only scans IDs 0–59 (0x00–0x3B).  IDs 60–63 are reserved per
@@ -30,7 +34,7 @@ Fuzzer::Fuzzer()
     , _running(false)
     , _stopRequested(false)
     , _recaptureRequested(false)
-    , _resumeRequested(false)
+    , _blacklistCount(0)
 {
 }
 
@@ -52,7 +56,6 @@ void Fuzzer::startFuzz(const uint8_t* skipIds, uint8_t skipCount) {
     _running              = true;
     _stopRequested        = false;
     _recaptureRequested   = false;
-    _resumeRequested      = false;
 
     // ── Build the Status ID list (IDs we monitor for changes) ──
     // Only consider IDs within the safe scan range (0–0x3B)
@@ -148,6 +151,22 @@ void Fuzzer::startFuzz(const uint8_t* skipIds, uint8_t skipCount) {
 }
 
 
+void Fuzzer::clearBlacklist() {
+    _blacklistCount = 0;
+}
+
+
+bool Fuzzer::addBlacklist(uint8_t id, uint8_t dlc, const uint8_t* payload) {
+    if (_blacklistCount >= MAX_BLACKLIST_ENTRIES) return false;
+
+    BlacklistEntry& entry = _blacklist[_blacklistCount++];
+    entry.id = id;
+    entry.dlc = dlc;
+    memcpy(entry.payload, payload, dlc);
+    return true;
+}
+
+
 void Fuzzer::requestStop() {
     _stopRequested = true;
 }
@@ -175,10 +194,6 @@ bool Fuzzer::checkForStop() {
         if (cmd == "RECAPTURE_BASELINE") {
             _recaptureRequested = true;
             // Don't return true — this is not a stop request
-        }
-        if (cmd == "RESUME_FUZZ") {
-            _resumeRequested = true;
-            // Don't return true — this resumes, not stops
         }
     }
     return false;
@@ -256,7 +271,7 @@ bool Fuzzer::compareAndReport(uint8_t actionId, uint8_t actionDLC,
 
 
 // ─────────────────────────────────────────────────────────────────
-//  Core Send-and-Check Cycle
+//  Core Send-and-Check Cycle (Natural Delay Architecture)
 // ─────────────────────────────────────────────────────────────────
 
 bool Fuzzer::sendAndCheck(uint8_t actionId, uint8_t dlc,
@@ -265,28 +280,30 @@ bool Fuzzer::sendAndCheck(uint8_t actionId, uint8_t dlc,
                           uint8_t statusCount) {
     reportSending(actionId, dlc, payload);
 
-    // Inject the fuzz frame
+    // ── Step 1: Inject the fuzz frame (~10ms) ────────────────────
     _lin->sendHeader(actionId);
     _lin->sendResponse(actionId, payload, dlc);
 
-    // Give the ECU time to physically react (relay click, register update)
-    // before polling Status IDs.  30 ms is within the 20–50 ms safe window.
-    delay(30);
-
-    // ── LIN Status Check (Orange Hit) ────────────────────────
+    // ── Step 2: Poll Status IDs (~50-60ms natural delay) ─────────
+    // This block creates the hardware settling time for relays/heaters
+    // to physically latch, eliminating the need for an explicit delay().
     bool linHit = compareAndReport(actionId, dlc, payload,
                                    statusIds, statusCount);
 
-    // ── Current Check (Purple Hit) ─────────────────────────
+    // ── Step 3: Active INA260 read (~1ms) ────────────────────────
     bool ampHit = false;
     if (_currentSensor && _currentSensor->isAvailable()) {
-        float currentMA = _currentSensor->readCurrentMA();
-        if (_currentSensor->isPhysicalHit(currentMA)) {
-            reportAmpHit(actionId, dlc, payload, currentMA);
+        float postMA = _currentSensor->readCurrentMA();
+
+        // Compare against the global idle baseline (absolute threshold).
+        // This is consistent with settleAfterAmpHit() which also uses
+        // isPhysicalHit().  Catches persistent loads that carry across
+        // multiple fuzz frames (e.g. heaters latching ON).
+        if (_currentSensor->isPhysicalHit(postMA)) {
+            reportAmpHit(actionId, dlc, payload, postMA);
             ampHit = true;
 
-            // Thermal settling: wait for current to drop before
-            // continuing, to prevent false-positive cascading
+            // Cool down: send all-zeros and wait for current to decay
             settleAfterAmpHit(actionId, dlc, payload,
                               statusIds, statusCount);
         }
@@ -299,6 +316,24 @@ bool Fuzzer::sendAndCheck(uint8_t actionId, uint8_t dlc,
 // ─────────────────────────────────────────────────────────────────
 //  Full Byte Sweep
 // ─────────────────────────────────────────────────────────────────
+
+bool Fuzzer::isBlacklisted(uint8_t actionId, uint8_t dlc, const uint8_t* payload) const {
+    for (uint8_t i = 0; i < _blacklistCount; i++) {
+        const BlacklistEntry& entry = _blacklist[i];
+        if (entry.id == actionId && entry.dlc == dlc) {
+            bool match = true;
+            for (uint8_t b = 0; b < dlc; b++) {
+                if (entry.payload[b] != payload[b]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return true;
+        }
+    }
+    return false;
+}
+
 
 void Fuzzer::fuzzFullByteSweep(uint8_t actionId, uint8_t dlc,
                                const uint8_t* statusIds,
@@ -315,6 +350,12 @@ void Fuzzer::fuzzFullByteSweep(uint8_t actionId, uint8_t dlc,
             if (checkForStop()) return;
 
             payload[bytePos] = (uint8_t)val;
+
+            if (isBlacklisted(actionId, dlc, payload)) {
+                // Silently skip
+                continue;
+            }
+
             sendAndCheck(actionId, dlc, payload, statusIds, statusCount);
             delay(LIN_INTERFRAME_DELAY_MS);
         }
@@ -406,7 +447,7 @@ void Fuzzer::reportAmpHit(uint8_t actionId, uint8_t dlc,
 
 
 // ─────────────────────────────────────────────────────────────────
-//  Thermal Settling & Latch Recovery
+//  Cooldown: All-Zeros Kill + FATAL_LOCKUP
 // ─────────────────────────────────────────────────────────────────
 
 void Fuzzer::settleAfterAmpHit(uint8_t actionId, uint8_t dlc,
@@ -415,19 +456,27 @@ void Fuzzer::settleAfterAmpHit(uint8_t actionId, uint8_t dlc,
                                uint8_t statusCount) {
     if (!_currentSensor || !_currentSensor->isAvailable()) return;
 
+    Serial.println("INFO:MSG=Amp hit detected — injecting all-zeros cooldown...");
+
+    // ── Stage 1: Immediately inject all-zeros kill frame ─────────
+    uint8_t zeroBuf[LIN_MAX_DATA_LEN] = {0};
+    _lin->sendHeader(actionId);
+    _lin->sendResponse(actionId, zeroBuf, dlc);
+
+    Serial.print("INFO:MSG=Zero Frame injected for ID 0x");
+    if (actionId < 0x10) Serial.print("0");
+    Serial.print(actionId, HEX);
+    Serial.print(" DLC=");
+    Serial.println(dlc);
+
+    // ── Stage 2: Poll INA260 every 100ms for up to 5s ───────────
     unsigned long startMs = millis();
     bool settled = false;
-    bool zeroFrameSent = false;
-
-    Serial.println("INFO:MSG=Amp hit detected \u2014 entering thermal settle...");
 
     while (!settled && !_stopRequested) {
         unsigned long elapsed = millis() - startMs;
 
-        // Poll the current sensor
         float mA = _currentSensor->readCurrentMA();
-
-        // Check if current has dropped back below the hit threshold
         if (!_currentSensor->isPhysicalHit(mA)) {
             settled = true;
             Serial.print("INFO:MSG=Current settled after ");
@@ -436,62 +485,31 @@ void Fuzzer::settleAfterAmpHit(uint8_t actionId, uint8_t dlc,
             break;
         }
 
-        // ── Stage 2: Active Kill at 3000 ms ───────────────────
-        // Inject a zero-frame to try to deactivate the relay
-        if (elapsed >= 3000 && !zeroFrameSent) {
-            uint8_t zeroBuf[LIN_MAX_DATA_LEN] = {0};
-            _lin->sendHeader(actionId);
-            _lin->sendResponse(actionId, zeroBuf, dlc);
-            zeroFrameSent = true;
-
-            Serial.print("INFO:MSG=Zero Frame injected for ID 0x");
+        // ── Timeout: FATAL_LOCKUP ────────────────────────────────
+        if (elapsed >= 5000) {
+            // Report the lockup to the GUI with all identifying info
+            Serial.print("FATAL_LOCKUP:ID=");
             if (actionId < 0x10) Serial.print("0");
             Serial.print(actionId, HEX);
-            Serial.println(" (active kill)");
-        }
-
-        // ── Stage 3: Emergency Halt at 5000 ms ───────────────
-        // If current is STILL high after 5 seconds + zero frame,
-        // the seat is hard-latched.  Pause and wait for the user
-        // to power-cycle the bench supply.
-        if (elapsed >= 5000) {
-            Serial.print("FUZZ_PAUSED:MANUAL_RESET_REQD,AMP=");
+            Serial.print(",DLC=");
+            Serial.print(dlc);
+            Serial.print(",DATA=");
+            for (uint8_t i = 0; i < dlc; i++) {
+                if (i > 0) Serial.print("_");
+                if (payload[i] < 0x10) Serial.print("0");
+                Serial.print(payload[i], HEX);
+            }
+            Serial.print(",AMPS=");
             Serial.println(mA / 1000.0f, 2);
 
-            // Block until user sends RESUME_FUZZ
-            waitForResume();
-
-            // After resume: recapture baselines from clean state
-            captureBaseline(statusIds, statusCount);
-            _currentSensor->captureBaseline();
-            Serial.println("INFO:MSG=Baselines recaptured after manual reset");
-            break;
+            // Halt the fuzzer — GUI handles recovery
+            _stopRequested = true;
+            return;
         }
 
         // Check for user abort while settling
-        if (checkForStop()) break;
+        if (checkForStop()) return;
 
         delay(100);  // Poll every 100 ms
-    }
-}
-
-
-void Fuzzer::waitForResume() {
-    Serial.println("INFO:MSG=Fuzzer paused \u2014 waiting for RESUME_FUZZ...");
-    _resumeRequested = false;
-
-    while (!_resumeRequested && !_stopRequested) {
-        // Non-blocking serial check
-        if (Serial.available()) {
-            String cmd = Serial.readStringUntil('\n');
-            cmd.trim();
-            if (cmd == "RESUME_FUZZ") {
-                _resumeRequested = true;
-                Serial.println("INFO:MSG=RESUME_FUZZ received \u2014 continuing");
-            } else if (cmd == "STOP_FUZZ") {
-                _stopRequested = true;
-            }
-        }
-        delay(50);  // Avoid tight-loop CPU burn
     }
 }

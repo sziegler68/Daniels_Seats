@@ -10,6 +10,7 @@
  *   LIN Bus:     19,200 baud on Serial1 (TX1=Pin1, RX1=Pin0)
  *   USB:         115,200 baud on Serial  (PC communication)
  *   NSLP Pin:    D2 → TJA1021 NSLP  (or set to LIN_SLP_PIN_DISABLED)
+ *   INA260:      I2C (A4/SDA, A5/SCL), ALERT pin NOT connected
  * 
  * Serial Protocol:
  *   PC → Arduino commands are line-terminated ASCII strings.
@@ -33,10 +34,6 @@
 // GODIYMODULES board ties NSLP directly to the 5V rail.
 #define SLP_PIN     2
 
-// INA260 ALERT pin (hardware interrupt for overcurrent safety).
-// D3 chosen because D2 is taken by TJA1021 SLP_PIN.
-#define INA260_ALERT_PIN  3
-
 // Serial1 TX pin — needed for manual break field generation.
 #define TX1_PIN     PIN_SERIAL1_TX
 
@@ -54,9 +51,6 @@ Sniffer        sniffer;
 Fuzzer         fuzzer;
 CurrentSensor  currentSensor;
 
-// Overcurrent ISR flag — set by hardware interrupt, checked in loop()
-volatile bool overcurrentTriggered = false;
-
 
 // ─────────────────────────────────────────────────────────────────
 //  Monitoring State
@@ -68,6 +62,14 @@ uint8_t  monitorIdCount   = 0;
 unsigned long lastMonitorPoll = 0;
 
 #define MONITOR_INTERVAL_MS  100
+
+
+// ─────────────────────────────────────────────────────────────────
+//  Voltage Telemetry
+// ─────────────────────────────────────────────────────────────────
+
+unsigned long lastVoltageReport = 0;
+#define VOLTAGE_REPORT_INTERVAL_MS  1000
 
 
 // ─────────────────────────────────────────────────────────────────
@@ -85,7 +87,6 @@ void handleCommand(const String& cmd);
 void parseSendFrame(const String& cmd);
 void parseMonitorCommand(const String& cmd);
 void pollMonitoredIds();
-void onOvercurrent();
 
 
 // ═════════════════════════════════════════════════════════════════
@@ -100,18 +101,14 @@ void setup() {
     sniffer.begin(&lin);
     fuzzer.begin(&lin, &sniffer, &currentSensor);
 
-    // ── INA260 Current Sensor ────────────────────────────────────
-    if (currentSensor.begin(INA260_ALERT_PIN)) {
+    // ── INA260 Current Sensor (software polling only) ────────────
+    if (currentSensor.begin()) {
         currentSensor.captureBaseline();
         Serial.print("INFO:MSG=INA260 ready. Idle baseline: ");
         Serial.print(currentSensor.getBaselineMA(), 1);
-        Serial.println(" mA");
-
-        // Attach hardware interrupt for overcurrent safety (12 A)
-        attachInterrupt(
-            digitalPinToInterrupt(INA260_ALERT_PIN),
-            onOvercurrent, FALLING
-        );
+        Serial.print(" mA, Bus voltage: ");
+        Serial.print(currentSensor.readVoltageMV() / 1000.0f, 2);
+        Serial.println(" V");
     } else {
         Serial.println("INFO:MSG=INA260 not detected — current sensing disabled");
     }
@@ -140,22 +137,15 @@ void loop() {
         }
     }
 
-    // ── Overcurrent safety check ──────────────────────────────
-    if (overcurrentTriggered) {
-        overcurrentTriggered = false;
-
-        // Immediately halt all operations
-        sniffer.requestStop();
-        fuzzer.requestStop();
-        monitoringActive = false;
-
-        // Report to GUI
-        float currentMA = currentSensor.readCurrentMA();
-        Serial.print("EMERGENCY_STOP:OVERCURRENT,AMP=");
-        Serial.println(currentMA / 1000.0f, 2);
-
-        // Clear the INA260 latched alert so it can re-trigger
-        currentSensor.clearAlert();
+    // ── Periodic voltage telemetry (1s, idle only) ──────────────
+    if (currentSensor.isAvailable()
+        && !sniffer.isRunning() && !fuzzer.isRunning()) {
+        if (millis() - lastVoltageReport >= VOLTAGE_REPORT_INTERVAL_MS) {
+            float volts = currentSensor.readVoltageMV() / 1000.0f;
+            Serial.print("VOLTAGE:");
+            Serial.println(volts, 2);
+            lastVoltageReport = millis();
+        }
     }
 
     // ── Continuous monitoring (when active and no scan/fuzz running)
@@ -198,7 +188,7 @@ void handleCommand(const String& cmd) {
             return;
         }
 
-        // Parse skip IDs from: START_FUZZ:SKIP=15,2A,30
+        // Parse skip IDs from: START_FUZZ:SKIP=21,44,30  (decimal)
         uint8_t skipIds[LIN_NUM_IDS];
         uint8_t skipCount = 0;
 
@@ -218,7 +208,7 @@ void handleCommand(const String& cmd) {
                 idStr.trim();
                 if (idStr.length() > 0) {
                     skipIds[skipCount++] =
-                        (uint8_t)strtol(idStr.c_str(), NULL, 16);
+                        (uint8_t)strtol(idStr.c_str(), NULL, 10);
                 }
             }
         }
@@ -242,6 +232,74 @@ void handleCommand(const String& cmd) {
             Serial.println(" mA");
         }
         Serial.println("INFO:MSG=Baseline recapture requested");
+    }
+    else if (cmd == "CLEAR_BLACKLIST") {
+        fuzzer.clearBlacklist();
+        Serial.println("INFO:MSG=Payload blacklist cleared");
+    }
+    else if (cmd.startsWith("ADD_BLACKLIST")) {
+        // Expected format: ADD_BLACKLIST:ID=0A,DLC=2,DATA=00_42
+        int idIdx   = cmd.indexOf("ID=");
+        int dlcIdx  = cmd.indexOf("DLC=");
+        int dataIdx = cmd.indexOf("DATA=");
+
+        if (idIdx >= 0 && dlcIdx >= 0 && dataIdx >= 0) {
+            String idStr = cmd.substring(idIdx + 3, cmd.indexOf(',', idIdx));
+            uint8_t id   = (uint8_t)strtol(idStr.c_str(), NULL, 16);
+
+            String dlcStr = cmd.substring(dlcIdx + 4, cmd.indexOf(',', dlcIdx));
+            uint8_t dlc   = (uint8_t)dlcStr.toInt();
+
+            String dataStr = cmd.substring(dataIdx + 5);
+            uint8_t data[LIN_MAX_DATA_LEN] = {0};
+            uint8_t dataCount = 0;
+
+            while (dataStr.length() > 0 && dataCount < dlc) {
+                int sepIdx = dataStr.indexOf('_');
+                String byteStr;
+                if (sepIdx >= 0) {
+                    byteStr = dataStr.substring(0, sepIdx);
+                    dataStr = dataStr.substring(sepIdx + 1);
+                } else {
+                    byteStr = dataStr;
+                    dataStr = "";
+                }
+                byteStr.trim();
+                if (byteStr.length() > 0) {
+                    data[dataCount++] = (uint8_t)strtol(byteStr.c_str(), NULL, 16);
+                }
+            }
+
+            if (dataCount == dlc) {
+                if (fuzzer.addBlacklist(id, dlc, data)) {
+                    Serial.print("INFO:MSG=Blacklisted ID=0x");
+                    Serial.print(id, HEX);
+                    Serial.print(" Payload=");
+                    for (uint8_t i = 0; i < dlc; i++) {
+                        if (i > 0) Serial.print("_");
+                        if (data[i] < 0x10) Serial.print("0");
+                        Serial.print(data[i], HEX);
+                    }
+                    Serial.println();
+                } else {
+                    Serial.println("ERROR:MSG=Blacklist full");
+                }
+            } else {
+                Serial.println("ERROR:MSG=ADD_BLACKLIST data count mismatch");
+            }
+        }
+    }
+    else if (cmd == "SET_BASELINE") {
+        // Re-zero the INA260 baseline to the current draw level.
+        // Used by GUI "Re-Baseline & Continue" recovery option.
+        if (currentSensor.isAvailable()) {
+            currentSensor.captureBaseline();
+            Serial.print("INFO:MSG=INA260 baseline set to: ");
+            Serial.print(currentSensor.getBaselineMA(), 1);
+            Serial.println(" mA");
+        } else {
+            Serial.println("ERROR:MSG=INA260 not available");
+        }
     }
 
     // ── Manual frame injection ───────────────────────────────────
@@ -445,15 +503,4 @@ void pollMonitoredIds() {
 
         delay(LIN_INTERFRAME_DELAY_MS);
     }
-}
-
-
-// ═════════════════════════════════════════════════════════════════
-//  INA260 Overcurrent ISR
-// ═════════════════════════════════════════════════════════════════
-
-void onOvercurrent() {
-    // Minimal ISR: just set the flag.  All heavy work (serial print,
-    // alert clearing, fuzzer stop) happens in loop() context.
-    overcurrentTriggered = true;
 }

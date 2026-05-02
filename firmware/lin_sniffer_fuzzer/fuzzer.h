@@ -7,19 +7,29 @@
  * LIN 2.x spec and excluded from automated fuzzing.
  * 
  * Fuzzing Strategy — Full Byte Sweep:
- *   For each Action ID and each candidate DLC (1–8):
+ *   For each Action ID and each candidate DLC (2, 4, 8):
  *     1. Hold all payload bytes at 0x00
  *     2. Target Byte 0, sweep 0x00–0xFF (256 values)
  *     3. Reset Byte 0 to 0x00, target Byte 1, sweep 0x00–0xFF
  *     4. Repeat for each byte position in the DLC
  *   Total payloads per Action ID per DLC = 256 × DLC
- *   A 30 ms delay is inserted between each injected payload and
- *   the subsequent Status ID poll to allow ECU reaction time.
+ *
+ * Timing Sequence (per payload):
+ *   1. Pre-injection INA260 current read  (~1ms)
+ *   2. Send LIN header + fuzz payload     (~10ms)
+ *   3. Poll all known Status IDs          (~50-60ms natural delay)
+ *   4. Post-injection INA260 current read (~1ms)
+ *   5. Compare pre vs post for amp hit detection
  *
  * Dual Hit Detection:
  *   - "Orange Hit" (LIN):  Status ID byte change detected
- *   - "Purple Hit" (AMP):  Current spike > baseline + 500 mA (INA260)
+ *   - "Purple Hit" (AMP):  Current delta > baseline + 500 mA (INA260)
  *   Both checks run after every injected payload.
+ *
+ * Cooldown on Amp Hit:
+ *   1. Immediately inject all-zeros at the same ID + DLC
+ *   2. Poll INA260 every 100ms for up to 5s waiting for decay
+ *   3. If still high after 5s → send FATAL_LOCKUP and halt
  */
 
 #ifndef FUZZER_H
@@ -43,6 +53,14 @@ struct FuzzHit {
     uint8_t statusDlc;
 };
 
+#define MAX_BLACKLIST_ENTRIES 20
+
+struct BlacklistEntry {
+    uint8_t id;
+    uint8_t dlc;
+    uint8_t payload[LIN_MAX_DATA_LEN];
+};
+
 
 class Fuzzer {
 public:
@@ -62,6 +80,12 @@ public:
      */
     void startFuzz(const uint8_t* skipIds, uint8_t skipCount);
 
+    /** Clear the payload blacklist. */
+    void clearBlacklist();
+
+    /** Add a payload to the blacklist. Returns true if added. */
+    bool addBlacklist(uint8_t id, uint8_t dlc, const uint8_t* payload);
+
     /** Request that an in-progress fuzz be aborted. */
     void requestStop();
 
@@ -75,7 +99,10 @@ private:
     volatile bool _running;
     volatile bool _stopRequested;
     volatile bool _recaptureRequested;
-    volatile bool _resumeRequested;
+
+    // Payload blacklist
+    BlacklistEntry _blacklist[MAX_BLACKLIST_ENTRIES];
+    uint8_t _blacklistCount;
 
     // Baseline status data for before/after comparison
     uint8_t _baseline[LIN_NUM_IDS][LIN_MAX_DATA_LEN];
@@ -110,6 +137,9 @@ private:
 
     // ── Payload Generation ───────────────────────────────────────
 
+    /** Check if a given ID+Payload is blacklisted. */
+    bool isBlacklisted(uint8_t actionId, uint8_t dlc, const uint8_t* payload) const;
+
     /** Send and check a single payload, handling the full cycle. */
     bool sendAndCheck(uint8_t actionId, uint8_t dlc, const uint8_t* payload,
                       const uint8_t* statusIds, uint8_t statusCount);
@@ -122,21 +152,17 @@ private:
     void fuzzFullByteSweep(uint8_t actionId, uint8_t dlc,
                            const uint8_t* statusIds, uint8_t statusCount);
 
-    // ── Thermal Settling ─────────────────────────────────────────
+    // ── Cooldown ─────────────────────────────────────────────────
 
     /**
-     * After an amp hit, wait for current to settle before continuing.
-     * Three-stage escalation:
-     *   Stage 1 (0–3s):  Poll INA260, wait for watchdog/natural decay
-     *   Stage 2 (3s):    Inject zero-frame active kill
-     *   Stage 3 (5s):    Halt fuzzer, require manual reset
+     * After an amp hit, cool down the activated component:
+     *   1. Immediately inject all-zeros at same ID + DLC
+     *   2. Poll INA260 every 100ms for up to 5s
+     *   3. If still high → send FATAL_LOCKUP and halt
      */
     void settleAfterAmpHit(uint8_t actionId, uint8_t dlc,
                            const uint8_t* payload,
                            const uint8_t* statusIds, uint8_t statusCount);
-
-    /** Block until the user sends RESUME_FUZZ via serial. */
-    void waitForResume();
 };
 
 #endif // FUZZER_H

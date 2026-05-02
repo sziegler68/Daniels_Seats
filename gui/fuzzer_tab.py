@@ -11,9 +11,16 @@ from ttkbootstrap.constants import *
 import tkinter as tk
 from tkinter import filedialog
 import csv
+import json
 import os
 from datetime import datetime
 from styles import *
+
+# Path to the persistent blacklist file (project root)
+_BLACKLIST_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "blacklist.json",
+)
 
 
 class FuzzerTab(ttk.Frame):
@@ -70,13 +77,7 @@ class FuzzerTab(ttk.Frame):
         )
         self.btn_recapture.pack(side=LEFT, padx=(0, PAD_WIDGET))
 
-        self.btn_resume = ttk.Button(
-            btn_row, text="\u25B6  Resume Fuzz",
-            bootstyle="success",
-            command=self._on_resume_fuzz, width=16,
-        )
-        # Hidden by default — only shown when FUZZ_PAUSED fires
-        self.btn_resume.pack_forget()
+
 
         self.status_label = ttk.Label(
             ctrl_frame, text="Status: Idle",
@@ -84,7 +85,6 @@ class FuzzerTab(ttk.Frame):
         )
         self.status_label.pack(anchor=W)
 
-        self.status_label.pack(anchor=W)
 
         # ── Exclude List & Aggregation ────────────────────────────
         agg_frame_wrap = ttk.Frame(paned, padding=5)
@@ -226,44 +226,42 @@ class FuzzerTab(ttk.Frame):
         if not self.serial.is_connected():
             return
 
-        # 1. Get known responsive IDs from sniffer (Current Session)
+        # 1. Get known responsive IDs from sniffer (bare hex: "15", "2A")
         sniffer_ids = self.sniffer_tab.get_active_ids()
 
-        # 2. Get aggregated IDs from imported CSVs
+        # 2. Get aggregated IDs from imported CSVs (prefixed: "0x15", "0x2a")
         agg_ids = list(self.aggregated_ids.keys())
 
-        # 3. Get manual skip IDs
+        # 3. Get manual skip IDs (user types hex, e.g. "1A" or "0x1A")
         manual_ids = []
         raw_manual = self.manual_skip_entry.get().strip()
         if raw_manual:
             for part in raw_manual.split(","):
                 part = part.strip()
                 if part:
-                    # Ensure it looks like a hex string if they typed "1A" instead of "0x1A"
                     if not part.lower().startswith("0x"):
                         part = f"0x{part}"
                     manual_ids.append(part)
 
-        # 4. Deduplicate all IDs into a set
-        all_hex_ids = set(sniffer_ids + agg_ids + manual_ids)
+        # 4. Normalize ALL IDs to integer values for reliable deduplication.
+        #    Sniffer gives "15" (bare hex), CSVs give "0x15", manual gives "0x1A".
+        #    Without normalizing, set({"15", "0x15"}) would not deduplicate.
+        all_int_ids = set()
+        for hid in (sniffer_ids + agg_ids + manual_ids):
+            try:
+                all_int_ids.add(int(hid, 16))
+            except ValueError:
+                pass
 
-        if not all_hex_ids:
+        if not all_int_ids:
             self._log(
                 "\u26A0 No Status IDs known. Run a Sniffer scan or import CSVs "
                 "for best results.",
                 "hit",
             )
 
-        # 5. Convert hex IDs to decimal strings for the Arduino parser
-        dec_ids = []
-        for hid in all_hex_ids:
-            try:
-                val = int(hid, 16)
-                dec_ids.append(str(val))
-            except ValueError:
-                pass
-
-        skip_str = ",".join(dec_ids)
+        # 5. Convert to decimal strings for the Arduino parser (base-10)
+        skip_str = ",".join(str(v) for v in sorted(all_int_ids))
         cmd = f"START_FUZZ:SKIP={skip_str}" if skip_str else "START_FUZZ"
 
         self.btn_start.configure(state=DISABLED)
@@ -271,6 +269,20 @@ class FuzzerTab(ttk.Frame):
         self.status_label.configure(
             text="Status: Fuzzing...", bootstyle="warning",
         )
+
+        # Sync the payload blacklist to the Arduino
+        self.serial.send_command("CLEAR_BLACKLIST")
+        bl_count = 0
+        for entry in self._load_blacklist():
+            bl_id = entry.get("id", "").replace("0x", "")
+            bl_dlc = entry.get("dlc", 0)
+            bl_data = entry.get("data", "")
+            if bl_id and bl_dlc and bl_data:
+                self.serial.send_command(f"ADD_BLACKLIST:ID={bl_id},DLC={bl_dlc},DATA={bl_data}")
+                bl_count += 1
+        
+        if bl_count > 0:
+            self._log(f"Synced {bl_count} payload blacklist entries to Arduino", "info")
 
         self.serial.send_command(cmd)
 
@@ -293,17 +305,7 @@ class FuzzerTab(ttk.Frame):
         self.serial.send_command("RECAPTURE_BASELINE")
         self._log("Baseline recapture requested", "info")
 
-    def _on_resume_fuzz(self):
-        """Send RESUME_FUZZ to the Arduino after the user has power-cycled
-        the seat module to clear a hard-latched state."""
-        if not self.serial.is_connected():
-            return
-        self.serial.send_command("RESUME_FUZZ")
-        self.btn_resume.pack_forget()
-        self.status_label.configure(
-            text="Status: Resuming...", bootstyle="info",
-        )
-        self._log("RESUME_FUZZ sent \u2014 fuzzer will continue", "info")
+
 
     def _on_import_csvs(self):
         filepaths = filedialog.askopenfilenames(
@@ -474,28 +476,191 @@ class FuzzerTab(ttk.Frame):
         )
         self._log(f"Fuzz complete. {hit_count} hits found.", "info")
 
-    def handle_fuzz_paused(self, params: dict):
-        """Handle FUZZ_PAUSED:MANUAL_RESET_REQD,AMP=X.XX
+    def handle_fatal_lockup(self, params: dict):
+        """Handle FATAL_LOCKUP:ID=XX,DLC=N,DATA=XX_XX,AMPS=X.XX
 
-        The Arduino has detected a hard-latched current state that did not
-        clear after the zero-frame active kill.  Show a warning and the
-        Resume button so the user can power-cycle and continue.
+        The Arduino's cooldown loop timed out after 5 seconds.
+        Show a recovery modal with 3 options.
         """
-        amp_str = params.get("AMP", "?.??")
+        lockup_id   = params.get("ID", "??")
+        lockup_dlc  = params.get("DLC", "?")
+        lockup_data = params.get("DATA", "")
+        lockup_amps = params.get("AMPS", "?.??")
 
+        self.btn_start.configure(state=NORMAL)
+        self.btn_stop.configure(state=DISABLED)
         self.status_label.configure(
-            text=f"\u26A0 PAUSED \u2014 Manual reset required ({amp_str} A still flowing)",
-            bootstyle="warning",
+            text=f"\u26A0 FATAL LOCKUP \u2014 {lockup_amps} A on ID 0x{lockup_id}",
+            bootstyle="danger",
         )
-
-        # Show the Resume button
-        self.btn_resume.pack(side=LEFT, padx=(0, PAD_WIDGET))
-
         self._log(
-            f"\u26A0 HARD LATCH: Current still at {amp_str} A after zero-frame "
-            f"kill. Power-cycle the bench supply, then click \u25B6 Resume.",
+            f"\u26A0 FATAL LOCKUP: ID=0x{lockup_id} DLC={lockup_dlc} "
+            f"DATA=[{lockup_data.replace('_', ' ')}] "
+            f"AMPS={lockup_amps} A \u2014 fuzzer halted",
             "hit",
         )
+
+        # ── Calculate the "Next Step" ────────────────────────────
+        next_id_hex   = lockup_id
+        next_data_str = lockup_data
+        try:
+            data_bytes = [int(b, 16) for b in lockup_data.split("_")]
+            # Increment the last non-zero byte (the sweep byte)
+            incremented = False
+            for i in range(len(data_bytes) - 1, -1, -1):
+                if data_bytes[i] > 0 or i == 0:
+                    if data_bytes[i] < 0xFF:
+                        data_bytes[i] += 1
+                        incremented = True
+                    else:
+                        # Byte rolled over — move to next byte position
+                        data_bytes[i] = 0
+                        if i + 1 < len(data_bytes):
+                            # Next byte position sweep starts at 0x01
+                            data_bytes[i + 1] = 0x01
+                            incremented = True
+                        else:
+                            # All positions exhausted → next ID
+                            raw_id = int(lockup_id, 16)
+                            if raw_id < 0x3B:
+                                next_id_hex = f"{raw_id + 1:02X}"
+                                data_bytes = [0] * len(data_bytes)
+                                incremented = True
+                    break
+            next_data_str = "_".join(f"{b:02X}" for b in data_bytes)
+        except (ValueError, IndexError):
+            pass
+
+        # ── Build the recovery modal ─────────────────────────────
+        modal = tk.Toplevel(self)
+        modal.title("\u26A0 FATAL LOCKUP \u2014 Recovery Options")
+        modal.geometry("600x420")
+        modal.resizable(False, False)
+        modal.grab_set()     # Make modal
+        modal.transient(self)
+
+        # Info section
+        info_frame = ttk.Frame(modal, padding=15)
+        info_frame.pack(fill=X)
+
+        ttk.Label(info_frame,
+                  text="\u26A1 ECU Lockup Detected",
+                  font=FONT_HEADING, bootstyle="danger",
+                  ).pack(anchor=W, pady=(0, 10))
+
+        details = (
+            f"Action ID:  0x{lockup_id}\n"
+            f"DLC:        {lockup_dlc}\n"
+            f"Payload:    [{lockup_data.replace('_', ' ')}]\n"
+            f"Current:    {lockup_amps} A (still flowing)\n"
+            f"\n"
+            f"Next Step:  ID=0x{next_id_hex}  DATA=[{next_data_str.replace('_', ' ')}]"
+        )
+        ttk.Label(info_frame, text=details,
+                  font=FONT_MONO, justify=LEFT,
+                  ).pack(anchor=W)
+
+        # Separator
+        ttk.Separator(modal).pack(fill=X, padx=15, pady=5)
+
+        # Button section
+        btn_frame = ttk.Frame(modal, padding=15)
+        btn_frame.pack(fill=X)
+
+        def _on_acknowledge():
+            """Populate the manual skip entry with the next step info."""
+            self.manual_skip_entry.delete(0, END)
+            self.manual_skip_entry.insert(0, f"0x{lockup_id}")
+            self.status_label.configure(
+                text=f"Status: Resume from ID 0x{next_id_hex}, "
+                     f"DATA=[{next_data_str.replace('_', ' ')}]",
+                bootstyle="info",
+            )
+            self._log(
+                f"\u2714 Acknowledged lockup. Next: ID=0x{next_id_hex} "
+                f"DATA=[{next_data_str.replace('_', ' ')}]. "
+                f"Power-cycle bench PSU, then click Start Fuzz.",
+                "info",
+            )
+            modal.destroy()
+
+        def _on_blacklist():
+            """Append the offending payload to blacklist.json."""
+            entry = {
+                "id":   f"0x{lockup_id}",
+                "dlc":  int(lockup_dlc) if lockup_dlc.isdigit() else 0,
+                "data": lockup_data,
+            }
+            blacklist = self._load_blacklist()
+            if entry not in blacklist:
+                blacklist.append(entry)
+                self._save_blacklist(blacklist)
+            self._log(
+                f"\u26D4 Blacklisted: ID=0x{lockup_id} DLC={lockup_dlc} "
+                f"DATA=[{lockup_data.replace('_', ' ')}]",
+                "hit",
+            )
+            self.status_label.configure(
+                text=f"Status: Payload blacklisted. Power-cycle and restart.",
+                bootstyle="warning",
+            )
+            modal.destroy()
+
+        def _on_rebaseline():
+            """Send SET_BASELINE and restart the fuzzer."""
+            if self.serial.is_connected():
+                self.serial.send_command("SET_BASELINE")
+            self._log(
+                f"\u27F2 Re-baselined INA260 to current draw level. "
+                f"Restarting fuzzer...",
+                "info",
+            )
+            self.status_label.configure(
+                text="Status: Re-baselined \u2014 restarting...",
+                bootstyle="info",
+            )
+            modal.destroy()
+            # Wait for Arduino to fully stop and emit FUZZ_DONE
+            # before sending a new START_FUZZ command
+            self.after(500, self._on_start_fuzz)
+
+        ttk.Button(
+            btn_frame,
+            text="\u2714  Acknowledge & Resume (Manual)",
+            bootstyle="info", width=40,
+            command=_on_acknowledge,
+        ).pack(fill=X, pady=(0, 8))
+
+        ttk.Button(
+            btn_frame,
+            text="\u26D4  Blacklist This Payload",
+            bootstyle="warning", width=40,
+            command=_on_blacklist,
+        ).pack(fill=X, pady=(0, 8))
+
+        ttk.Button(
+            btn_frame,
+            text="\u27F2  Re-Baseline & Continue",
+            bootstyle="success", width=40,
+            command=_on_rebaseline,
+        ).pack(fill=X)
+
+    # ═════════════════════════════════════════════════════════════
+    #  Blacklist Persistence
+    # ═════════════════════════════════════════════════════════════
+
+    def _load_blacklist(self) -> list:
+        """Load blacklist.json from the project root. Returns [] if missing."""
+        try:
+            with open(_BLACKLIST_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
+
+    def _save_blacklist(self, blacklist: list):
+        """Write the blacklist to blacklist.json in the project root."""
+        with open(_BLACKLIST_PATH, "w", encoding="utf-8") as f:
+            json.dump(blacklist, f, indent=2)
 
     # ═════════════════════════════════════════════════════════════
     #  Public Accessor
@@ -504,3 +669,4 @@ class FuzzerTab(ttk.Frame):
     def get_hits(self) -> list:
         """Return list of hit data dicts for the Manual tab."""
         return self.hits
+
