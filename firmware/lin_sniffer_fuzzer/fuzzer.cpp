@@ -48,10 +48,10 @@ void Fuzzer::begin(LinBus* lin, Sniffer* sniffer, CurrentSensor* cs) {
 
 
 // ─────────────────────────────────────────────────────────────────
-//  Main Fuzz Entry Point
+//  Main Fuzz Execution
 // ─────────────────────────────────────────────────────────────────
 
-void Fuzzer::startFuzz(const uint8_t* skipIds, uint8_t skipCount) {
+void Fuzzer::startFuzz(const uint8_t* skipIds, uint8_t skipCount, const uint8_t* dlcs, uint8_t dlcCount) {
     if (!_lin || !_sniffer || _running) return;
 
     _running              = true;
@@ -123,13 +123,17 @@ void Fuzzer::startFuzz(const uint8_t* skipIds, uint8_t skipCount) {
         // Fresh baseline before each new Action ID
         captureBaseline(statusIds, statusCount);
 
-        // Standard LIN DLC lengths: 2, 4, 8 bytes
-        // (DLC 1,3,5,6,7 are non-standard and will be checksum-rejected)
-        static const uint8_t DLC_CANDIDATES[] = {2, 4, 8};
-        static const uint8_t DLC_CANDIDATE_COUNT = 3;
+        // Setup DLC candidates
+        uint8_t currentDlcs[3] = {2, 4, 8};
+        uint8_t currentDlcCount = 3;
+        
+        if (dlcs != nullptr && dlcCount > 0 && dlcCount <= 3) {
+            memcpy(currentDlcs, dlcs, dlcCount);
+            currentDlcCount = dlcCount;
+        }
 
-        for (uint8_t d = 0; d < DLC_CANDIDATE_COUNT; d++) {
-            uint8_t dlc = DLC_CANDIDATES[d];
+        for (uint8_t d = 0; d < currentDlcCount; d++) {
+            uint8_t dlc = currentDlcs[d];
 
             // Check if the GUI requested a baseline recapture mid-run
             if (_recaptureRequested) {

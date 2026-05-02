@@ -31,7 +31,10 @@ class FuzzerTab(ttk.Frame):
         self.serial = serial_manager
         self.sniffer_tab = sniffer_tab
         self.hits = []   # List of hit data dicts
-        self.aggregated_ids = {} # Hex ID -> List of filenames
+        self.aggregated_ids = {} # { "0x15": ["20231012.csv", "20231013.csv"] }
+
+        self._loop_hit_job = None
+        self._loop_active = False
 
         self._build_ui()
 
@@ -90,6 +93,18 @@ class FuzzerTab(ttk.Frame):
             variable=self.pause_on_hit_var, bootstyle="warning-round-toggle",
         )
         self.chk_pause_on_hit.pack(side=LEFT, padx=(0, PAD_WIDGET))
+
+        # DLC Toggles
+        ttk.Label(btn_row, text="DLCs:", font=FONT_SMALL).pack(side=LEFT, padx=(PAD_INNER, 2))
+        
+        self.dlc2_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(btn_row, text="2", variable=self.dlc2_var, bootstyle="info-square-toggle").pack(side=LEFT, padx=2)
+        
+        self.dlc4_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(btn_row, text="4", variable=self.dlc4_var, bootstyle="info-square-toggle").pack(side=LEFT, padx=2)
+        
+        self.dlc8_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(btn_row, text="8", variable=self.dlc8_var, bootstyle="info-square-toggle").pack(side=LEFT, padx=2)
 
         self.status_label = ttk.Label(
             ctrl_frame, text="Status: Idle",
@@ -178,6 +193,14 @@ class FuzzerTab(ttk.Frame):
             command=self._on_clear_hits,
         ).pack(side=LEFT, padx=(0, PAD_WIDGET))
 
+        self.btn_loop_hit = ttk.Button(
+            hits_toolbar, text="\U0001F501 Loop Selected Hit",
+            bootstyle="warning",
+            command=self._on_toggle_loop_hit,
+            state=DISABLED,
+        )
+        self.btn_loop_hit.pack(side=LEFT, padx=(0, PAD_WIDGET))
+
         self.hit_count_label = ttk.Label(
             hits_toolbar, text="Hits: 0", font=FONT_BODY,
         )
@@ -218,6 +241,8 @@ class FuzzerTab(ttk.Frame):
 
         self.hits_tree.tag_configure("hit", foreground=COLOR_ACCENT_ORANGE)
         self.hits_tree.tag_configure("amp_hit", foreground=COLOR_ACCENT_PURPLE)
+
+        self.hits_tree.bind("<<TreeviewSelect>>", self._on_hit_selected)
 
         # ── Event Log ─────────────────────────────────────────────
         bot_frame = ttk.Frame(paned, padding=5)
@@ -295,7 +320,22 @@ class FuzzerTab(ttk.Frame):
 
         # 5. Convert to decimal strings for the Arduino parser (base-10)
         skip_str = ",".join(str(v) for v in sorted(all_int_ids))
-        cmd = f"START_FUZZ:SKIP={skip_str}" if skip_str else "START_FUZZ"
+        
+        # 6. Parse DLC selection
+        dlcs = []
+        if self.dlc2_var.get(): dlcs.append("2")
+        if self.dlc4_var.get(): dlcs.append("4")
+        if self.dlc8_var.get(): dlcs.append("8")
+        dlc_str = ",".join(dlcs)
+
+        # Ensure at least one DLC is selected
+        if not dlc_str:
+            self._log("\u26A0 No DLCs selected. Defaulting to 8.", "error")
+            dlc_str = "8"
+
+        cmd = f"START_FUZZ:DLC={dlc_str}"
+        if skip_str:
+            cmd += f";SKIP={skip_str}"
 
         self.btn_start.configure(state=DISABLED)
         self.btn_stop.configure(state=NORMAL)
@@ -321,6 +361,7 @@ class FuzzerTab(ttk.Frame):
 
     def _on_stop_fuzz(self):
         self.serial.send_command("STOP_FUZZ")
+        self._stop_loop()
         self.btn_start.configure(state=NORMAL)
         self.btn_stop.configure(state=DISABLED)
         self.btn_resume.configure(state=DISABLED)
@@ -330,6 +371,7 @@ class FuzzerTab(ttk.Frame):
 
     def _on_resume_fuzz(self):
         """Resume a paused fuzz session."""
+        self._stop_loop()
         self.serial.send_command("RESUME_FUZZ")
         self.btn_resume.configure(state=DISABLED)
         self.btn_stop.configure(state=NORMAL)
@@ -378,10 +420,80 @@ class FuzzerTab(ttk.Frame):
 
     def _on_clear_hits(self):
         """Clear all hits from the table and internal list."""
+        self._stop_loop()
         self.hits.clear()
         self.hits_tree.delete(*self.hits_tree.get_children())
         self.hit_count_label.configure(text="Hits: 0")
         self._log("Hits cleared.", "info")
+        self.btn_loop_hit.configure(state=DISABLED)
+
+    def _on_hit_selected(self, event):
+        """Enable the Loop button if a hit is selected and fuzzer is paused or stopped."""
+        selected = self.hits_tree.selection()
+        # Enable if something is selected AND we are not actively fuzzing
+        if selected and str(self.btn_stop.cget("state")) != str(NORMAL):
+            self.btn_loop_hit.configure(state=NORMAL)
+        elif selected and str(self.btn_resume.cget("state")) == str(NORMAL):
+            # Also allow if paused
+            self.btn_loop_hit.configure(state=NORMAL)
+        else:
+            self.btn_loop_hit.configure(state=DISABLED)
+            
+    def _on_toggle_loop_hit(self):
+        """Start or stop looping the selected hit."""
+        if self._loop_active:
+            self._stop_loop()
+        else:
+            self._start_loop()
+
+    def _start_loop(self):
+        selected = self.hits_tree.selection()
+        if not selected:
+            return
+            
+        item = self.hits_tree.item(selected[0])
+        values = item["values"]
+        if not values: return
+        
+        # values = ("action_id", "dlc", "payload", "status_id", ...)
+        # action_id is like "0x07", payload is "00 00 00 00 B6 00 00 00"
+        action_id = str(values[0]).replace("0x", "")
+        dlc = str(values[1])
+        payload = str(values[2]).replace(" ", "_")
+        
+        cmd = f"SEND_FRAME:ID={action_id},DLC={dlc},DATA={payload}"
+        
+        self._loop_active = True
+        self.btn_loop_hit.configure(
+            text="\U0001F6D1 Stop Loop",
+            bootstyle="danger"
+        )
+        self._log(f"Started looping ID={action_id} DATA={payload}", "info")
+        self._loop_iteration(cmd)
+
+    def _loop_iteration(self, cmd):
+        if not self._loop_active:
+            return
+            
+        if self.serial.is_connected():
+            self.serial.send_command(cmd)
+            
+        self._loop_hit_job = self.after(200, self._loop_iteration, cmd)
+
+    def _stop_loop(self):
+        if not self._loop_active:
+            return
+            
+        self._loop_active = False
+        if self._loop_hit_job:
+            self.after_cancel(self._loop_hit_job)
+            self._loop_hit_job = None
+            
+        self.btn_loop_hit.configure(
+            text="\U0001F501 Loop Selected Hit",
+            bootstyle="warning"
+        )
+        self._log("Stopped loop.", "info")
 
     def _on_import_csvs(self):
         filepaths = filedialog.askopenfilenames(

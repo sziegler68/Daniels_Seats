@@ -76,9 +76,11 @@ public:
      * 
      * Automatically excludes known Status IDs (from sniffer results)
      * and uses them as the monitoring set for change detection.
-     * Only scans IDs 0–59 (0x00–0x3B).
+     * @param skipCount Number of valid elements in skipIds.
+     * @param dlcs Array of DLC values to fuzz (e.g. {2,4,8}).
+     * @param dlcCount Number of DLCs.
      */
-    void startFuzz(const uint8_t* skipIds, uint8_t skipCount);
+    void startFuzz(const uint8_t* skipIds, uint8_t skipCount, const uint8_t* dlcs = nullptr, uint8_t dlcCount = 0);
 
     /** Clear the payload blacklist. */
     void clearBlacklist();

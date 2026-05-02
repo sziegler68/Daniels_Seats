@@ -217,7 +217,20 @@ void handleCommand(const String& cmd) {
             }
         }
 
-        fuzzer.startFuzz(skipIds, skipCount);
+        // Parse DLCs from: START_FUZZ:DLC=2,8;SKIP=...
+        uint8_t dlcs[3] = {2, 4, 8};
+        uint8_t dlcCount = 3;
+
+        int dlcIdx = cmd.indexOf("DLC=");
+        if (dlcIdx >= 0) {
+            dlcCount = 0;
+            String dlcStr = cmd.substring(dlcIdx + 4, cmd.indexOf(';', dlcIdx) >= 0 ? cmd.indexOf(';', dlcIdx) : cmd.length());
+            if (dlcStr.indexOf('2') >= 0) dlcs[dlcCount++] = 2;
+            if (dlcStr.indexOf('4') >= 0) dlcs[dlcCount++] = 4;
+            if (dlcStr.indexOf('8') >= 0) dlcs[dlcCount++] = 8;
+        }
+
+        fuzzer.startFuzz(skipIds, skipCount, dlcs, dlcCount);
     }
     else if (cmd == "STOP_FUZZ") {
         fuzzer.requestStop();
