@@ -98,6 +98,9 @@ public:
     /** True while fuzzing is in progress. */
     bool isRunning() const;
 
+    /** True while the fuzzer is paused. */
+    bool isPaused() const;
+
 private:
     LinBus*         _lin;
     Sniffer*        _sniffer;

@@ -184,6 +184,10 @@ bool Fuzzer::isRunning() const {
     return _running;
 }
 
+bool Fuzzer::isPaused() const {
+    return _pauseRequested;
+}
+
 
 // ─────────────────────────────────────────────────────────────────
 //  Stop/Pause Command Check

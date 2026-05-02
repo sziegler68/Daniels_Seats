@@ -232,7 +232,7 @@ void handleCommand(const String& cmd) {
     // ── Manual frame sender ─────────────────────────────────────
     else if (cmd.startsWith("SEND_FRAME")) {
         // Format: SEND_FRAME:ID=0A,DLC=8,DATA=8C_00_00_00_00_00_00_00
-        if (sniffer.isRunning() || fuzzer.isRunning()) {
+        if (sniffer.isRunning() || (fuzzer.isRunning() && !fuzzer.isPaused())) {
             Serial.println("ERROR:MSG=Another operation is already running");
             return;
         }
