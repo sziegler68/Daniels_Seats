@@ -771,17 +771,16 @@ class FuzzerTab(ttk.Frame):
         )
         self._log("\u25B6 Fuzzer resumed.", "info")
 
+    def handle_power_telemetry(self, params: dict):
+        """Handle POWER:V=XX,A=XX telemetry messages."""
+        self._last_amps = float(params.get("A", 0.0))
+
     def handle_fatal_lockup(self, params: dict):
         """Handle FATAL_LOCKUP:ID=XX,DLC=N,DATA=XX_XX,AMPS=X.XX
 
         The Arduino's cooldown loop timed out after 5 seconds.
         Show a recovery modal with 3 options.
         """
-        pass
-        
-    def handle_power_telemetry(self, params: dict):
-        """Handle POWER:V=XX,A=XX telemetry messages."""
-        self._last_amps = float(params.get("A", 0.0))
         lockup_id   = params.get("ID", "??")
         lockup_dlc  = params.get("DLC", "?")
         lockup_data = params.get("DATA", "")
