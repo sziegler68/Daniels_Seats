@@ -329,6 +329,7 @@ class LinBusAnalyzer(ttk.Window):
             amps  = p.get("A", "--")
             self.voltage_label.configure(text=f"\u26A1 {volts}V")
             self.current_label.configure(text=f"\u2301 {amps}A")
+            self.fuzzer_tab.handle_power_telemetry(p)
         elif t == "PONG":
             self.status_text.configure(
                 text="Arduino responded: PONG \u2713",

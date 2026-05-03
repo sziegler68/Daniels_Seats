@@ -160,17 +160,7 @@ private:
     void fuzzFullByteSweep(uint8_t actionId, uint8_t dlc,
                            const uint8_t* statusIds, uint8_t statusCount);
 
-    // ── Cooldown ─────────────────────────────────────────────────
 
-    /**
-     * After an amp hit, cool down the activated component:
-     *   1. Immediately inject all-zeros at same ID + DLC
-     *   2. Poll INA260 every 100ms for up to 5s
-     *   3. If still high → send FATAL_LOCKUP and halt
-     */
-    void settleAfterAmpHit(uint8_t actionId, uint8_t dlc,
-                           const uint8_t* payload,
-                           const uint8_t* statusIds, uint8_t statusCount);
 };
 
 #endif // FUZZER_H

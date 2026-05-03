@@ -278,6 +278,21 @@ bool Fuzzer::checkForStop() {
                     }
                 }
             }
+            
+            // ── Periodic power telemetry while paused (1s interval)
+            if (_currentSensor && _currentSensor->isAvailable()) {
+                static unsigned long lastReport = 0;
+                if (millis() - lastReport >= 1000) {
+                    float volts = _currentSensor->readVoltageMV() / 1000.0f;
+                    float amps  = _currentSensor->readCurrentMA() / 1000.0f;
+                    Serial.print("POWER:V=");
+                    Serial.print(volts, 2);
+                    Serial.print(",A=");
+                    Serial.println(amps, 3);
+                    lastReport = millis();
+                }
+            }
+            
             delay(10);  // Avoid busy-waiting
         }
     }
@@ -389,9 +404,7 @@ bool Fuzzer::sendAndCheck(uint8_t actionId, uint8_t dlc,
             reportAmpHit(actionId, dlc, payload, postMA);
             ampHit = true;
 
-            // Cool down: send all-zeros and wait for current to decay
-            settleAfterAmpHit(actionId, dlc, payload,
-                              statusIds, statusCount);
+            // GUI will handle verification loop
         }
     }
 
@@ -528,74 +541,15 @@ void Fuzzer::reportAmpHit(uint8_t actionId, uint8_t dlc,
 
     // Convert mA to A with 2 decimal places
     Serial.print(",AMP=");
-    Serial.println(currentMA / 1000.0f, 2);
-}
-
-
-// ─────────────────────────────────────────────────────────────────
-//  Cooldown: All-Zeros Kill + FATAL_LOCKUP
-// ─────────────────────────────────────────────────────────────────
-
-void Fuzzer::settleAfterAmpHit(uint8_t actionId, uint8_t dlc,
-                               const uint8_t* payload,
-                               const uint8_t* statusIds,
-                               uint8_t statusCount) {
-    if (!_currentSensor || !_currentSensor->isAvailable()) return;
-
-    Serial.println("INFO:MSG=Amp hit detected — injecting all-zeros cooldown...");
-
-    // ── Stage 1: Immediately inject all-zeros kill frame ─────────
-    uint8_t zeroBuf[LIN_MAX_DATA_LEN] = {0};
-    _lin->sendHeader(actionId);
-    _lin->sendResponse(actionId, zeroBuf, dlc);
-
-    Serial.print("INFO:MSG=Zero Frame injected for ID 0x");
-    if (actionId < 0x10) Serial.print("0");
-    Serial.print(actionId, HEX);
-    Serial.print(" DLC=");
-    Serial.println(dlc);
-
-    // ── Stage 2: Poll INA260 every 100ms for up to 5s ───────────
-    unsigned long startMs = millis();
-    bool settled = false;
-
-    while (!settled && !_stopRequested) {
-        unsigned long elapsed = millis() - startMs;
-
-        float mA = _currentSensor->readCurrentMA();
-        if (!_currentSensor->isPhysicalHit(mA)) {
-            settled = true;
-            Serial.print("INFO:MSG=Current settled after ");
-            Serial.print(elapsed);
-            Serial.println(" ms");
-            break;
-        }
-
-        // ── Timeout: FATAL_LOCKUP ────────────────────────────────
-        if (elapsed >= 5000) {
-            // Report the lockup to the GUI with all identifying info
-            Serial.print("FATAL_LOCKUP:ID=");
-            if (actionId < 0x10) Serial.print("0");
-            Serial.print(actionId, HEX);
-            Serial.print(",DLC=");
-            Serial.print(dlc);
-            Serial.print(",DATA=");
-            for (uint8_t i = 0; i < dlc; i++) {
-                if (i > 0) Serial.print("_");
-                if (payload[i] < 0x10) Serial.print("0");
-                Serial.print(payload[i], HEX);
-            }
-            Serial.print(",AMPS=");
-            Serial.println(mA / 1000.0f, 2);
-
-            // Halt the fuzzer — GUI handles recovery
-            _stopRequested = true;
-            return;
-        }
-
-        // Check for user abort while settling
-        if (checkForStop()) return;
-
-        delay(100);  // Poll every 100 ms
+    Serial.print(currentMA / 1000.0f, 2);
+    
+    if (_currentSensor) {
+        Serial.print(",BASE=");
+        Serial.print(_currentSensor->getBaselineMA() / 1000.0f, 2);
     }
+    
+    Serial.println();
 }
+
+
+// Cooldown removed: GUI now handles false-positive 60-second verification loop

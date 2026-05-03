@@ -36,6 +36,9 @@ class FuzzerTab(ttk.Frame):
         self._loop_hit_job = None
         self._loop_active = False
         self._fuzzer_paused = False
+        self._last_amps = 0.0
+        self._verifying_hit = False
+        self._verify_baseline = 0.0
 
         self._build_ui()
 
@@ -242,6 +245,7 @@ class FuzzerTab(ttk.Frame):
 
         self.hits_tree.tag_configure("hit", foreground=COLOR_ACCENT_ORANGE)
         self.hits_tree.tag_configure("amp_hit", foreground=COLOR_ACCENT_PURPLE)
+        self.hits_tree.tag_configure("fp_hit", foreground="#7a8288", font=("Segoe UI", 9, "overstrike"))
 
         self.hits_tree.bind("<<TreeviewSelect>>", self._on_hit_selected)
 
@@ -471,6 +475,11 @@ class FuzzerTab(ttk.Frame):
             bootstyle="danger"
         )
         self._log(f"Started looping ID={action_id} DATA={payload}", "info")
+        
+        if self._verifying_hit:
+            import time
+            self._loop_start_time = time.time()
+            
         self._loop_iteration(cmd)
 
     def _loop_iteration(self, cmd):
@@ -480,6 +489,37 @@ class FuzzerTab(ttk.Frame):
         if self.serial.is_connected():
             self.serial.send_command(cmd)
             
+        if self._verifying_hit:
+            import time
+            elapsed = time.time() - self._loop_start_time
+            remaining = 60 - int(elapsed)
+            
+            if remaining > 0:
+                self.status_label.configure(
+                    text=f"Status: Verifying hit ({remaining}s remaining)...",
+                    bootstyle="info"
+                )
+            else:
+                self._verifying_hit = False
+                self._stop_loop()
+                
+                diff = self._last_amps - self._verify_baseline
+                if diff >= 0.1:
+                    # TRUE HIT
+                    self._log(f"\u2705 TRUE HIT CONFIRMED! Current is {diff:.2f}A above baseline.", "success")
+                    self.status_label.configure(
+                        text=f"Status: True Hit! (+{diff:.2f}A). Click Resume to continue.",
+                        bootstyle="success"
+                    )
+                else:
+                    # FALSE POSITIVE
+                    self._log(f"\u26A0\uFE0F FALSE POSITIVE: Current dropped to {self._last_amps:.2f}A. Resuming scan...", "warning")
+                    selected = self.hits_tree.selection()
+                    if selected:
+                        self.hits_tree.item(selected[0], tags=("fp_hit",))
+                    self._on_resume_fuzz()
+                return
+
         self._loop_hit_job = self.after(200, self._loop_iteration, cmd)
 
     def _stop_loop(self):
@@ -487,6 +527,7 @@ class FuzzerTab(ttk.Frame):
             return
             
         self._loop_active = False
+        self._verifying_hit = False
         if self._loop_hit_job:
             self.after_cancel(self._loop_hit_job)
             self._loop_hit_job = None
@@ -645,6 +686,9 @@ class FuzzerTab(ttk.Frame):
         dlc       = params.get("DLC", "?")
         data      = params.get("DATA", "").replace("_", " ")
         amp_str   = params.get("AMP", "?.??")
+        
+        self._verify_baseline = float(params.get("BASE", 0.0))
+        self._verifying_hit = True
 
         row_data = (
             f"0x{action_id}", dlc, data,
@@ -733,6 +777,11 @@ class FuzzerTab(ttk.Frame):
         The Arduino's cooldown loop timed out after 5 seconds.
         Show a recovery modal with 3 options.
         """
+        pass
+        
+    def handle_power_telemetry(self, params: dict):
+        """Handle POWER:V=XX,A=XX telemetry messages."""
+        self._last_amps = float(params.get("A", 0.0))
         lockup_id   = params.get("ID", "??")
         lockup_dlc  = params.get("DLC", "?")
         lockup_data = params.get("DATA", "")
