@@ -705,11 +705,16 @@ class FuzzerTab(ttk.Frame):
         # Enable loop button if a hit is selected
         if self.hits_tree.selection():
             self.btn_loop_hit.configure(state=NORMAL)
+            
+            # If Pause-on-Hit is checked, automatically start looping
+            if self.pause_on_hit_var.get() and not self._loop_active:
+                self._start_loop()
+                
         self.status_label.configure(
-            text="Status: PAUSED \u2014 examine hit, then Loop / Resume / Stop",
+            text="Status: PAUSED \u2014 Auto-looping hit, click Resume to continue",
             bootstyle="info",
         )
-        self._log("\u23F8 Fuzzer paused. Click Loop to test the hit, Resume to continue.", "info")
+        self._log("\u23F8 Fuzzer paused. Auto-looping the hit. Click Resume to continue.", "info")
 
     def handle_fuzz_resumed(self, params: dict):
         """Handle FUZZ_RESUMED — Arduino has resumed fuzzing."""
