@@ -124,6 +124,9 @@ void Fuzzer::startFuzz(const uint8_t* skipIds, uint8_t skipCount, const uint8_t*
 
         // Fresh baseline before each new Action ID
         captureBaseline(statusIds, statusCount);
+        if (_currentSensor && _currentSensor->isAvailable()) {
+            _currentSensor->captureBaseline();
+        }
 
         // Setup DLC candidates
         uint8_t currentDlcs[3] = {2, 4, 8};
