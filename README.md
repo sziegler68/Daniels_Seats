@@ -74,9 +74,11 @@ python app.py
    - Go to the **Fuzzer** tab.
    - Click **Start Fuzz**. The Arduino will inject payloads into all unused IDs and monitor for responses.
    - **Orange Hits (LIN Status):** A payload caused a change in the data of a known Status ID.
-   - **Purple Hits (Current Spike):** A payload caused a physical component to activate (e.g., heater, fan) detected by the INA260, even if no digital LIN status changed.
-   - *Thermal Settling:* If a heater activates, the fuzzer will pause briefly to let the current dissipate.
-   - *Hard Latches:* If current remains high (e.g., >5 seconds), the GUI will show a **⚠ PAUSED** warning. You must power-cycle the bench supply, then click **▶ Resume Fuzz**.
+   - **Purple Hits (Current Spike):** A payload caused a physical component to activate detected by the INA260.
+   - *Hardware Auto-Pause:* The Arduino will immediately halt its sweep upon detecting a current spike to guarantee the exact triggering payload is captured.
+   - *Automated Verification Loop:* The GUI will automatically loop the suspect frame for 60 seconds. If the current remains elevated >0.1A above baseline, it logs a **True Hit**. If the current drops back to baseline, it logs a **False Positive** (strikethrough) and automatically resumes the fuzzing sweep.
+   - *Baseline Recalibration:* The firmware automatically recaptures the idle current baseline before starting every new Action ID to prevent false hits caused by ECU warm-up drift.
+   - *Speed Optimization:* Polling Status IDs slows the fuzzer down from 16ms/frame to ~1s/frame. If you only care about Current Spikes, clear your imported Status CSVs to scan an entire Action ID in 45 seconds instead of 25 minutes.
 
 4. **Phase 3: Trigger & Map**
    - Go to the **ID Mapper** / Manual tab.
