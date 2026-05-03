@@ -35,6 +35,7 @@ Fuzzer::Fuzzer()
     , _stopRequested(false)
     , _recaptureRequested(false)
     , _pauseRequested(false)
+    , _autoPause(false)
     , _blacklistCount(0)
 {
 }
@@ -51,12 +52,13 @@ void Fuzzer::begin(LinBus* lin, Sniffer* sniffer, CurrentSensor* cs) {
 //  Main Fuzz Execution
 // ─────────────────────────────────────────────────────────────────
 
-void Fuzzer::startFuzz(const uint8_t* skipIds, uint8_t skipCount, const uint8_t* dlcs, uint8_t dlcCount) {
+void Fuzzer::startFuzz(const uint8_t* skipIds, uint8_t skipCount, const uint8_t* dlcs, uint8_t dlcCount, bool autoPause) {
     if (!_lin || !_sniffer || _running) return;
 
     _running              = true;
     _stopRequested        = false;
     _recaptureRequested   = false;
+    _autoPause            = autoPause;
 
     // ── Build the Status ID list (IDs we monitor for changes) ──
     // Only consider IDs within the safe scan range (0–0x3B)
@@ -406,6 +408,10 @@ bool Fuzzer::sendAndCheck(uint8_t actionId, uint8_t dlc,
 
             // GUI will handle verification loop
         }
+    }
+
+    if (ampHit && _autoPause) {
+        _pauseRequested = true;
     }
 
     return linHit || ampHit;

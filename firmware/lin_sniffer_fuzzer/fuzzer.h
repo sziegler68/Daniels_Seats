@@ -75,8 +75,9 @@ public:
      * @param skipCount  Number of valid elements in skipIds.
      * @param dlcs       Array of DLC values to fuzz (e.g. {2,4,8}). NULL = all.
      * @param dlcCount   Number of elements in dlcs. 0 = use default {2,4,8}.
+     * @param autoPause  If true, fuzzer automatically pauses upon detecting a hit.
      */
-    void startFuzz(const uint8_t* skipIds, uint8_t skipCount, const uint8_t* dlcs = nullptr, uint8_t dlcCount = 0);
+    void startFuzz(const uint8_t* skipIds, uint8_t skipCount, const uint8_t* dlcs = nullptr, uint8_t dlcCount = 0, bool autoPause = false);
 
     /** Clear the payload blacklist. */
     void clearBlacklist();
@@ -107,6 +108,7 @@ private:
     volatile bool _stopRequested;
     volatile bool _recaptureRequested;
     volatile bool _pauseRequested;
+    bool _autoPause;
 
     // Payload blacklist
     BlacklistEntry _blacklist[MAX_BLACKLIST_ENTRIES];

@@ -341,6 +341,8 @@ class FuzzerTab(ttk.Frame):
         cmd = f"START_FUZZ:DLC={dlc_str}"
         if skip_str:
             cmd += f";SKIP={skip_str}"
+        if self.pause_on_hit_var.get():
+            cmd += ";PAUSE=1"
 
         self.btn_start.configure(state=DISABLED)
         self.btn_stop.configure(state=NORMAL)
@@ -497,6 +499,10 @@ class FuzzerTab(ttk.Frame):
             if remaining > 0:
                 self.status_label.configure(
                     text=f"Status: Verifying hit ({remaining}s remaining)...",
+                    bootstyle="info"
+                )
+                self.btn_loop_hit.configure(
+                    text=f"\U0001F551 Verifying ({remaining}s)...",
                     bootstyle="info"
                 )
             else:

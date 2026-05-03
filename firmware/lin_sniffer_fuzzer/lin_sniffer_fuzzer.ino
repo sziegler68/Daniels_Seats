@@ -252,7 +252,9 @@ void handleCommand(const String& cmd) {
             }
         }
 
-        fuzzer.startFuzz(skipIds, skipCount, dlcs, dlcCount);
+        bool autoPause = (cmd.indexOf("PAUSE=1") >= 0);
+
+        fuzzer.startFuzz(skipIds, skipCount, dlcs, dlcCount, autoPause);
     }
     else if (cmd == "STOP_FUZZ") {
         fuzzer.requestStop();
